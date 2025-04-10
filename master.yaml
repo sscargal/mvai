@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFormation template for setting up a MemVerge.ai PoC environment with ALB integration.
+
+Parameters:
+  VPCID:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for deploying resources
+
+  SubnetID:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID for launching instances
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+
+  AMIControlPlane:
+    Type: AWS::EC2::Image::Id
+    Description: AMI ID for the Control Plane instance
+
+  AMIWorkerNode:
+    Type: AWS::EC2::Image::Id
+    Description: AMI ID for the Worker Node instance
+
+  InstanceTypeControlPlane:
+    Type: String
+    Default: "m5.2xlarge"
+    Description: EC2 instance type for Control Plane (8 vCPUs, 16 GB RAM)
+
+  InstanceTypeWorker:
+    Type: String
+    Default: "g5.4xlarge"
+    Description: EC2 instance type for Worker Node (16 vCPUs, 64 GB RAM, 1 GPU)
+
+  MemVergeVersion:
+    Type: String
+    Default: "0.3.1"
+    Description: Version of MemVerge.ai Helm chart to install
+
+  SubDomain:
+    Type: String
+    Description: Sub-domain for MemVerge.ai Load Balancer access
+
+  WorkerNodeCount:
+    Type: Number
+    Default: 1
+    Description: Number of worker nodes to create
+
+  ControlPlaneCount:
+    Type: Number
+    Default: 1
+    Description: Number of control plane nodes to create (1 or 3)
+
+  ScriptSource:
+    Type: String
+    AllowedValues:
+      - s3
+      - github
+    Default: github
+    Description: Select script source "s3" or "github"
+
+  ScriptS3Bucket:
+    Type: String
+    Default: "memverge-ai-poc-userdata-script-amd"
+    Description: If using S3, specify the bucket name (no trailing slash)
+
+  GitHubRepoRawURL:
+    Type: String
+    Default: "https://raw.githubusercontent.com/your-org/your-repo/main/scripts"
+    Description: If using GitHub, specify the raw base URL to the scripts folder (no trailing slash)
+
+  MemVergeGitHubToken:
+    Type: String
+    NoEcho: true
+    Description: GitHub token for accessing MemVerge Helm chart registry
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0abcdef1234567890
+
+Resources:
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for worker nodes with ALB access"
+      VpcId: !Ref VPCID
+      SecurityGroupIngress:
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "MemVerge-Worker-SG"
+
+  ControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for control plane nodes"
+      VpcId: !Ref VPCID
+      SecurityGroupIngress:
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: "MemVerge-ControlPlane-SG"
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for ALB"
+      VpcId: !Ref VPCID
+      SecurityGroupIngress:
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: "MemVerge-ALB-SG"
+
+  MemVergeInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MemVergeInstanceRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+       - PolicyName: S3ReadAccessPolicy
+         PolicyDocument:
+           Version: "2012-10-17"
+           Statement:
+             - Effect: Allow
+               Action:
+                 - s3:GetObject
+               Resource: !Sub "arn:aws:s3:::${ScriptS3Bucket}/*"
+
+  MemVergeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: MemVergeInstanceProfile
+      Roles:
+        - !Ref MemVergeInstanceRole
+
+  ControlPlaneLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: memverge-controlplane-launch-template
+      LaunchTemplateData:
+        ImageId: !Ref AMIControlPlane
+        InstanceType: !Ref InstanceTypeControlPlane
+        KeyName: !Ref KeyPairName
+        IamInstanceProfile:
+          Name: !Ref MemVergeInstanceProfile
+        SecurityGroupIds:
+          - !Ref ControlPlaneSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # set -xe
+            exec > >(tee -i /var/log/worker-init.log) 2>&1
+            echo "Worker Node Initialization"
+            apt update -y && apt install -y unzip curl
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip && ./aws/install
+            
+            if [ "${ScriptSource}" = "s3" ]; then
+              aws s3 cp s3://${ScriptS3Bucket}/worker.sh /tmp/worker.sh
+            else
+              curl -fsSL ${GitHubRepoRawURL}/worker.sh -o /tmp/worker.sh
+            fi
+            
+            chmod +x /tmp/worker.sh
+            
+            K3S_TOKEN=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='K3sJoinToken'].OutputValue" --output text)
+            K3S_URL=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='ControlPlaneURL'].OutputValue" --output text)
+            export K3S_TOKEN=$K3S_TOKEN
+            export K3S_URL=$K3S_URL
+            
+            /tmp/worker.sh
+        BlockDeviceMappings:
+          - DeviceName: "/dev/sda1"
+            Ebs:
+              VolumeSize: 60
+  ControlPlaneASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ControlPlaneLaunchTemplate
+        Version: !GetAtt ControlPlaneLaunchTemplate.LatestVersionNumber
+      MinSize: !Ref ControlPlaneCount
+      MaxSize: !Ref ControlPlaneCount
+      DesiredCapacity: !Ref ControlPlaneCount
+      VPCZoneIdentifier:
+        - !Ref SubnetID
+      Tags:
+        - Key: Name
+          Value: "MemVerge-ControlPlane"
+          PropagateAtLaunch: true
+
+  WorkerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: memverge-worker-launch-template
+      LaunchTemplateData:
+        ImageId: !Ref AMIWorkerNode
+        InstanceType: !Ref InstanceTypeWorker
+        KeyName: !Ref KeyPairName
+        IamInstanceProfile:
+          Name: !Ref MemVergeInstanceProfile
+        SecurityGroupIds:
+          - !Ref WorkerSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # set -xe
+            exec > >(tee -i /var/log/worker-init.log) 2>&1
+            echo "Worker Node Initialization"
+            apt update -y && apt install -y unzip curl
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip && ./aws/install
+            
+            if [ "${ScriptSource}" = "s3" ]; then
+              aws s3 cp s3://${ScriptS3Bucket}/worker.sh /tmp/worker.sh
+            else
+              curl -fsSL ${GitHubRepoRawURL}/worker.sh -o /tmp/worker.sh
+            fi
+            
+            chmod +x /tmp/worker.sh
+            
+            K3S_TOKEN=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='K3sJoinToken'].OutputValue" --output text)
+            K3S_URL=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='ControlPlaneURL'].OutputValue" --output text)
+            export K3S_TOKEN=$K3S_TOKEN
+            export K3S_URL=$K3S_URL
+            
+            /tmp/worker.sh
+  WorkerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WorkerLaunchTemplate
+        Version: !GetAtt WorkerLaunchTemplate.LatestVersionNumber
+      MinSize: !Ref WorkerNodeCount
+      MaxSize: !Ref WorkerNodeCount
+      DesiredCapacity: !Ref WorkerNodeCount
+      VPCZoneIdentifier:
+        - !Ref SubnetID
+      Tags:
+        - Key: Name
+          Value: "MemVerge-WorkerNode"
+          PropagateAtLaunch: true
+    DependsOn:
+      - ControlPlaneASG
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref SubnetID
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "MemVerge-ALB"
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 31380
+      Protocol: HTTP
+      VpcId: !Ref VPCID
+      TargetType: instance
+
+  ALBRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "memvergelab.com." # Replace with your actual hosted zone
+      Name: !Sub "${SubDomain}.memvergelab.com."
+      TTL: "60"
+      ResourceRecords:
+        - !GetAtt LoadBalancer.DNSName
+
+
+Outputs:
+  K3sJoinTokenSSMPath:
+    Description: K3s Join Token is stored in AWS SSM Parameter Store
+    Value: "/k3s/join-token"
+
