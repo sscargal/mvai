@@ -233,6 +233,12 @@ Resources:
             curl -s ${GitHubRepoPath}worker.sh -o worker.sh
             chmod +x worker.sh
             ./worker.sh
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            SubnetId: !Ref SubnetID
+            Groups:
+              - !Ref WorkerSecurityGroup
 
   WorkerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
