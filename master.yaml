@@ -128,7 +128,17 @@ Resources:
                 Action:
                   - ssm:GetParameter
                   - ssm:PutParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*" # Allow all parameters
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/k3s/join-token"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/k3s/url"
         - PolicyName: EC2DescribeInstancesPolicy
           PolicyDocument:
             Version: "2012-10-17"
