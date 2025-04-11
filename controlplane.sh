@@ -1,16 +1,15 @@
 #!/bin/bash
-# set -xe
 
 echo "[INIT] Control Plane Node Initialization"
 
 # Validate required tools
 command -v curl >/dev/null || { echo "[ERROR] curl not found"; exit 1; }
-command -v jq >/dev/null || apt-get install -y jq
-command -v aws >/dev/null || apt-get install -y unzip && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
+command -v jq >/dev/null || apt-get update -y && apt-get install -y jq -y
+command -v aws >/dev/null || apt-get update -y && apt-get install -y unzip -y && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
 
 echo "[INSTALL] Updating System & Installing Required Tools"
 apt-get update -y
-apt-get install -y ca-certificates curl unzip jq
+apt-get install -y ca-certificates curl unzip jq -y
 
 echo "[INSTALL] Installing Docker"
 install -m 0755 -d /etc/apt/keyrings
@@ -20,100 +19,60 @@ chmod a+r /etc/apt/keyrings/docker.asc || { echo "[ERROR] Failed to set permissi
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"${UBUNTU_CODENAME:-$VERSION_CODENAME}\") stable" \
 | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-apt-get update -y
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-systemctl enable docker && systemctl start docker
+apt-get update -y || { echo "[ERROR] Failed to update the packages using 'apt-get update -y'" }
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+systemctl enable docker || { echo "[ERROR] Failed to enable the Docker systemd service" }
+systemctl start docker || { echo "[ERROR] Failed to start the Docker systemd service" }
 
 echo "[INSTALL] Installing K3s Server Control Plane"
 curl -sfL https://get.k3s.io | sh - || { echo "[ERROR] K3s install failed"; exit 1; }
 
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+# Verify we can communicate with the K3s Cluster
 kubectl get nodes || { echo "[ERROR] kubectl get nodes failed"; exit 1; }
 
 echo "[K3S] Storing Join Token in SSM"
 K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
 if [ -z "$K3S_TOKEN" ]; then
-  echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token'. Exiting."
-  exit 1
+    echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token'. Exiting."
+    exit 1
 fi
-aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write token to SSM"; exit 1; }
+# Store the K3S Server Token in AWS SSM so the Worker can read it and join the cluster.
+aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s Join Token to SSM"; exit 1; }
 
-# Get the IP Address of the Control Plane
+# Get the IP Address of the Control Plane (this node)
 CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
-# Get the IP Addresses of the Control Plane nodes, and select the first one if there is more than one
-# Use this when we have a Highly-Available Control Plane environment
-# CONTROL_PLANE_IP=$(aws ec2 describe-instances \
-#  --filters "Name=tag:Name,Values=MemVerge-ControlPlane" \
-#            "Name=instance-state-name,Values=running" \
-#  --query "Reservations[*].Instances[*].PublicIpAddress" \
-#  --output text | head -n1) || { echo "[ERROR] Failed to retrieve Control Plane IP"; exit 1; }
 if [ -z "$CONTROL_PLANE_IP" ]; then
-  echo "[ERROR] Failed to get the Control Plane IP Address"
-  exit 1
+    echo "[ERROR] Failed to get the Control Plane IP Address"
+    exit 1
 fi
-echo "[K3S] Server URL: https://${CONTROL_PLANE_IP}:6443"
+K3S_URL="https://${CONTROL_PLANE_IP}:6443"
+echo "[K3S] Server URL: $K3S_URL"
+aws ssm put-parameter --name "/k3s/url" --value "$K3S_URL" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s URL to SSM"; exit 1; }
 
-echo "[WAIT] Waiting for worker nodes to become Ready"
+echo "[WAIT] Waiting for $WORKER_NODE_COUNT worker nodes to become Ready"
 
-# Obtain the EC2 Instance ID of the Control Plane node
-# 169.254.169.254 is always available to all EC2 instances and never changes across accounts or regions
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-if [ -z "$INSTANCE_ID" ]; then
-  echo "[ERROR] Failed to retrieve EC2 instance ID"
-  exit 1
-fi
-
-# Get the CloudFormation StackID
-STACK_ID=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" --query 'Tags[?Key==`aws:cloudformation:stack-id`].Value' --output text)
-if [ -z "$STACK_ID" ]; then
-  echo "[ERROR] Could not determine the CloudFormation StackID from the EC2 tags"
-  exit 1
-fi
-
-# Use the StackID to get the StackName
-STACK_NAME=$(aws cloudformation describe-stacks --stack-id "$STACK_ID" --query 'Stacks[0].StackName' --output text)
-if [ -z "$STACK_NAME" ]; then
-  echo "[ERROR] Could not determine CloudFormation Stack Name from EC2 tags"
-  exit 1
-fi
-
-# Get Expected Worker Count
-EXPECTED_WORKERS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
-    --query "Stacks[0].Parameters[?ParameterKey=='WorkerNodeCount'].ParameterValue" --output text)
-
-# STACK_NAME=$(aws cloudformation describe-stacks \
-#   --filters "Name=resource-id,Values=$INSTANCE_ID" \
-#   | jq -r '.Tags[] | select(.Key=="aws:cloudformation:stack-name") | .Value')
-# 
-# if [ -z "$STACK_NAME" ]; then
-#   echo "[ERROR] Could not determine CloudFormation Stack Name from EC2 tags"
-#   exit 1
-# fi
-# 
-# EXPECTED_WORKERS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
-#   --query "Stacks[0].Parameters[?ParameterKey=='WorkerNodeCount'].ParameterValue" --output text)
-
-EXPECTED_NODES=$((EXPECTED_WORKERS + 1))
+# Include the Control Plan in the node count
+EXPECTED_NODES=$((WORKER_NODE_COUNT + 1))
 
 timeout=300
-interval=10
+interval=30
 elapsed=0
 
 while [ "$elapsed" -lt "$timeout" ]; do
-  READY_NODES=$(kubectl get nodes --no-headers | grep -c ' Ready')
-  echo "[WAIT] Ready Nodes: $READY_NODES / $EXPECTED_NODES"
-  if [ "$READY_NODES" -eq "$EXPECTED_NODES" ]; then
-    echo "[SUCCESS] All $EXPECTED_NODES nodes are Ready"
-    break
-  fi
-  sleep "$interval"
-  elapsed=$((elapsed + interval))
-  echo "[WAIT] Elapsed Time: $((elapsed / 60))m $((elapsed % 60))s"
+    READY_NODES=$(kubectl get nodes --no-headers | grep -c ' Ready')
+    echo "[WAIT] Ready Nodes: $READY_NODES / $EXPECTED_NODES"
+    if [ "$READY_NODES" -eq "$EXPECTED_NODES" ]; then
+        echo "[SUCCESS] All $EXPECTED_NODES nodes are Ready"
+        break
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    echo "[WAIT] Elapsed Time: $((elapsed / 60))m $((elapsed % 60))s"
 done
 
 if [ "$READY_NODES" -ne "$EXPECTED_NODES" ]; then
-  echo "[ERROR] Timeout: Only $READY_NODES of $EXPECTED_NODES nodes Ready after $((timeout / 60))m"
-  exit 1
+    echo "[ERROR] Timeout: Only $READY_NODES of $EXPECTED_NODES nodes Ready after $((timeout / 60))m"
+    exit 1
 fi
 
 ##########
@@ -159,7 +118,6 @@ kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
     --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
     --type=kubernetes.io/dockerconfigjson
 
-# CONTROL_PLANE_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
 LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
 
 echo "[MVAI] Installing MemVerge.ai using the Helm Chart"
