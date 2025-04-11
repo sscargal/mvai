@@ -33,7 +33,7 @@ kubectl get nodes || { echo "[ERROR] kubectl get nodes failed"; exit 1; }
 echo "[K3S] Storing Join Token in SSM"
 K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
 if [ -z "$K3S_TOKEN" ]; then
-  echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token')
+  echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token')"
 fi
 aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write token to SSM"; exit 1; }
 
