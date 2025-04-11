@@ -47,6 +47,11 @@ K3S_URL="https://${CONTROL_PLANE_IP}:6443"
 echo "[K3S] Server URL: $K3S_URL"
 aws ssm put-parameter --name "/k3s/url" --value "$K3S_URL" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s URL to SSM"; exit 1; }
 
+# Ensure we get the correct number of worker nodes for this CloudFormation stack
+if [ -z "$WORKER_NODE_COUNT" ]; then
+    echo "[ERROR] WORKER_NODE_COUNT is not set. Exiting."
+    exit 1
+fi
 echo "[WAIT] Waiting for $WORKER_NODE_COUNT worker nodes to become Ready"
 
 # Include the Control Plan in the node count
@@ -122,7 +127,7 @@ LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
 echo "[MVAI] Installing MemVerge.ai using the Helm Chart"
 helm install --namespace cattle-system mvai oci://ghcr.io/memverge/charts/mvai \
     --wait --timeout 20m \
-    --version ${MemVergeVersion} \
+    --version ${MEMVERGE_VERSION} \
     --set hostname=$LOADBALANCER_HOSTNAME \
     --set bootstrapPassword=admin \
     --set ingress.tls.source=letsEncrypt \
