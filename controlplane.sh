@@ -31,6 +31,7 @@ if [ -z "$K3S_TOKEN" ]; then
     echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token'. Exiting."
     exit 1
 fi
+
 # Store the K3S Server Token in AWS SSM so the Worker can read it and join the cluster.
 aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s Join Token to SSM"; exit 1; }
 
@@ -40,6 +41,8 @@ if [ -z "$CONTROL_PLANE_IP" ]; then
     echo "[ERROR] Failed to get the Control Plane IP Address"
     exit 1
 fi
+
+# Store the Control Plane IP Address in AWS SSM so the Worker can read it and join the cluster.
 K3S_URL="https://${CONTROL_PLANE_IP}:6443"
 echo "[K3S] Server URL: $K3S_URL"
 aws ssm put-parameter --name "/k3s/url" --value "$K3S_URL" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s URL to SSM"; exit 1; }
@@ -52,9 +55,9 @@ EXPECTED_NODES=$((WORKER_NODE_COUNT + 1))
 timeout=300
 interval=30
 elapsed=0
-
+# Wait for the nodes to be "Ready"
 while [ "$elapsed" -lt "$timeout" ]; do
-    READY_NODES=$(kubectl get nodes --no-headers | grep -c ' Ready')
+    READY_NODES=$(kubectl get nodes --no-headers | grep -c 'Ready')
     echo "[WAIT] Ready Nodes: $READY_NODES / $EXPECTED_NODES"
     if [ "$READY_NODES" -eq "$EXPECTED_NODES" ]; then
         echo "[SUCCESS] All $EXPECTED_NODES nodes are Ready"
@@ -65,6 +68,7 @@ while [ "$elapsed" -lt "$timeout" ]; do
     echo "[WAIT] Elapsed Time: $((elapsed / 60))m $((elapsed % 60))s"
 done
 
+# Check if we timed out waiting for the nodes to be Ready
 if [ "$READY_NODES" -ne "$EXPECTED_NODES" ]; then
     echo "[ERROR] Timeout: Only $READY_NODES of $EXPECTED_NODES nodes Ready after $((timeout / 60))m"
     exit 1
