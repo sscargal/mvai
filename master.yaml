@@ -44,7 +44,7 @@ Parameters:
 
   SubDomain:
     Type: String
-    Description: Sub-domain on memvergelab.com for MemVerge.ai Load Balancer access, e.g.: "demo" will map to "demo.memvegelab.com"
+    Description: Sub-domain on memvergelab.com for MemVerge.ai Load Balancer access, e.g. "demo" will map to "demo.memvegelab.com"
 
   WorkerNodeCount:
     Type: Number
@@ -85,10 +85,20 @@ Parameters:
 Mappings:
   RegionMap:
     us-east-1:
-      AMI: ami-0abcdef1234567890
+      ami: ami-0ed9277fb7eb570c9
+    us-east-2:
+      ami: ami-002068ed284fb165b
+    us-west-1:
+      ami: ami-03af6a70ccd8cb578
+    us-west-2:
+      ami: ami-00f7e5c52c0f43726
   ELBHostedZoneIds:
     us-east-1:
       ZoneId: Z35SXDOTRQ7X7K
+    us-east-2:
+      ZoneId: Z3AADJGX6KTTL2
+    us-west-1:
+      ZoneId: Z368ELLRRE2KJ0
     us-west-2:
       ZoneId: Z1H1FL5HABSF5
 
