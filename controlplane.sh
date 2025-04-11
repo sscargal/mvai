@@ -8,13 +8,14 @@ command -v curl >/dev/null || { echo "[ERROR] curl not found"; exit 1; }
 command -v jq >/dev/null || apt-get install -y jq
 command -v aws >/dev/null || apt-get install -y unzip && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install
 
-echo "[INSTALL] Updating System & Installing Docker"
+echo "[INSTALL] Updating System & Installing Required Tools"
 apt-get update -y
 apt-get install -y ca-certificates curl unzip jq
 
+echo "[INSTALL] Installing Docker"
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-chmod a+r /etc/apt/keyrings/docker.asc
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || { echo "[ERROR] Failed to download Docker GPG key"; exit 1; }
+chmod a+r /etc/apt/keyrings/docker.asc || { echo "[ERROR] Failed to set permissions for Docker GPG key"; exit 1; }
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"${UBUNTU_CODENAME:-$VERSION_CODENAME}\") stable" \
 | tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -23,11 +24,11 @@ apt-get update -y
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable docker && systemctl start docker
 
-echo "[INSTALL] Installing K3s server"
-curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --cluster-init" sh -s - || { echo "[ERROR] K3s install failed"; exit 1; }
+echo "[INSTALL] Installing K3s Server Control Plane"
+curl -sfL https://get.k3s.io | sh - || { echo "[ERROR] K3s install failed"; exit 1; }
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-kubectl get nodes || { echo "[ERROR] kubectl failed"; exit 1; }
+kubectl get nodes || { echo "[ERROR] kubectl get nodes failed"; exit 1; }
 
 echo "[K3S] Storing Join Token in SSM"
 K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
@@ -67,17 +68,22 @@ EXPECTED_WORKERS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME"
 
 EXPECTED_NODES=$((EXPECTED_WORKERS + 1))
 
-for i in {1..30}; do
+timeout=300
+interval=10
+elapsed=0
+
+while [ "$elapsed" -lt "$timeout" ]; do
   READY_NODES=$(kubectl get nodes --no-headers | grep -c ' Ready')
   echo "[WAIT] Ready Nodes: $READY_NODES / $EXPECTED_NODES"
   if [ "$READY_NODES" -eq "$EXPECTED_NODES" ]; then
     echo "[SUCCESS] All $EXPECTED_NODES nodes are Ready"
     break
   fi
-  sleep 10
+  sleep "$interval"
+  elapsed=$((elapsed + interval))
 done
 
 if [ "$READY_NODES" -ne "$EXPECTED_NODES" ]; then
-  echo "[ERROR] Timeout: Only $READY_NODES of $EXPECTED_NODES nodes Ready after 5m"
+  echo "[ERROR] Timeout: Only $READY_NODES of $EXPECTED_NODES nodes Ready after $((timeout / 60))m"
   exit 1
 fi
