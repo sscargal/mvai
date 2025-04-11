@@ -12,15 +12,10 @@ apt-get update -y
 apt-get install -y ca-certificates curl unzip jq -y
 
 echo "[INSTALL] Installing Docker"
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || { echo "[ERROR] Failed to download Docker GPG key"; exit 1; }
-chmod a+r /etc/apt/keyrings/docker.asc || { echo "[ERROR] Failed to set permissions for Docker GPG key"; exit 1; }
+# Use the Docker Convenience script
+curl -fsSL https://get.docker.com -o get-docker.sh
+sh ./get-docker.sh
 
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"${UBUNTU_CODENAME:-$VERSION_CODENAME}\") stable" \
-| tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-apt-get update -y || { echo "[ERROR] Failed to update the packages using 'apt-get update -y'" }
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
 systemctl enable docker || { echo "[ERROR] Failed to enable the Docker systemd service" }
 systemctl start docker || { echo "[ERROR] Failed to start the Docker systemd service" }
 
