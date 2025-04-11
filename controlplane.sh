@@ -133,7 +133,7 @@ kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
     --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
     --type=kubernetes.io/dockerconfigjson
 
-CONTROL_PLANE_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
+# CONTROL_PLANE_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
 LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
 
 echo "[MVAI] Installing MemVerge.ai using the Helm Chart"
