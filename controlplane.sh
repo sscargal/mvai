@@ -33,7 +33,8 @@ kubectl get nodes || { echo "[ERROR] kubectl get nodes failed"; exit 1; }
 echo "[K3S] Storing Join Token in SSM"
 K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
 if [ -z "$K3S_TOKEN" ]; then
-  echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token')"
+  echo "[ERROR] Failed to get the K3s Control Plan Token from '/var/lib/rancher/k3s/server/node-token'. Exiting."
+  exit 1
 fi
 aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write token to SSM"; exit 1; }
 
@@ -81,6 +82,7 @@ while [ "$elapsed" -lt "$timeout" ]; do
   fi
   sleep "$interval"
   elapsed=$((elapsed + interval))
+  echo "[WAIT] Elapsed Time: $((elapsed / 60))m $((elapsed % 60))s"
 done
 
 if [ "$READY_NODES" -ne "$EXPECTED_NODES" ]; then
@@ -94,11 +96,13 @@ fi
 
 # Validate environment variables
 if [ -z "$MEMVERGE_VERSION" ] || [ -z "$MEMVERGE_SUBDOMAIN" ] || [ -z "$MEMVERGE_GITHUB_TOKEN" ]; then
-    echo "[ERROR] Missing required environment variables. Exiting."
+    echo "[ERROR] Missing required environment variables."
+    echo "[DEBUG] MEMVERGE_VERSION='$MEMVERGE_VERSION'"
+    echo "[DEBUG] MEMVERGE_SUBDOMAIN='$MEMVERGE_SUBDOMAIN'"
+    echo "[DEBUG] MEMVERGE_GITHUB_TOKEN='$MEMVERGE_GITHUB_TOKEN'"
+    echo "Ensure MEMVERGE_VERSION, MEMVERGE_SUBDOMAIN, and MEMVERGE_GITHUB_TOKEN are set."
     exit 1
 fi
-
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 echo "[INIT] MemVerge.ai installation starting..."
 
@@ -117,17 +121,17 @@ helm install cert-manager jetstack/cert-manager --namespace cert-manager --set c
 kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=cert-manager -n cert-manager --timeout=300s || echo "[WARN] cert-manager may not be ready"
 
 echo "[HELM] Logging into GHCR"
-helm registry logout ghcr.io/memverge || true
+helm registry logout ghcr.io/memverge || echo "[INFO] helm registry logout failed"
 helm registry login ghcr.io/memverge -u mv-customer-support -p $MEMVERGE_GITHUB_TOKEN
 if [ $? -ne 0 ]; then
     echo "[ERROR] Helm login failed. Exiting."
     exit 1
 fi
 
-kubectl create namespace cattle-system || true
+kubectl create namespace cattle-system
 kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
     --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
-    --type=kubernetes.io/dockerconfigjson || true
+    --type=kubernetes.io/dockerconfigjson
 
 CONTROL_PLANE_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
 LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
