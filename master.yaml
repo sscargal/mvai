@@ -223,8 +223,6 @@ Resources:
         KeyName: !Ref KeyPairName
         IamInstanceProfile:
           Name: !Ref MemVergeInstanceProfile
-        SecurityGroupIds:
-          - !Ref WorkerSecurityGroup
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
