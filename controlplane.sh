@@ -16,8 +16,8 @@ echo "[INSTALL] Installing Docker"
 curl -fsSL https://get.docker.com -o get-docker.sh
 sh ./get-docker.sh
 
-systemctl enable docker || { echo "[ERROR] Failed to enable the Docker systemd service" }
-systemctl start docker || { echo "[ERROR] Failed to start the Docker systemd service" }
+systemctl enable docker || echo "[ERROR] Failed to enable the Docker systemd service"
+systemctl start docker || echo "[ERROR] Failed to start the Docker systemd service"
 
 echo "[INSTALL] Installing K3s Server Control Plane"
 curl -sfL https://get.k3s.io | sh - || { echo "[ERROR] K3s install failed"; exit 1; }
