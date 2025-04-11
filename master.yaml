@@ -33,6 +33,10 @@ Parameters:
     Default: "g5.4xlarge"
     Description: EC2 instance type for Worker Node (16 vCPUs, 64 GB RAM, 1 GPU)
 
+  ControlPlaneElasticIP:
+    Type: String
+    Description: "The Elastic IP address assigned to the Control Plane (e.g., 203.0.113.5)"
+
   MemVergeVersion:
     Type: String
     Default: "0.3.1"
@@ -40,7 +44,7 @@ Parameters:
 
   SubDomain:
     Type: String
-    Description: Sub-domain for MemVerge.ai Load Balancer access
+    Description: Sub-domain on memvergelab.com for MemVerge.ai Load Balancer access, e.g.: "demo" will map to "demo.memvegelab.com"
 
   WorkerNodeCount:
     Type: Number
@@ -58,17 +62,20 @@ Parameters:
       - s3
       - github
     Default: github
-    Description: Select script source "s3" or "github"
+    Description: >
+      Select the source of your scripts.
+      If 's3' is selected, fill in 'ScriptS3Bucket'.
+      If 'github' is selected, fill in 'GitHubRepoRawURL'.
 
   ScriptS3Bucket:
     Type: String
     Default: "memverge-ai-poc-userdata-script-amd"
-    Description: If using S3, specify the bucket name (no trailing slash)
+    Description: Required only if ScriptSource is 's3'. Specify the bucket name (no trailing slash)
 
   GitHubRepoRawURL:
     Type: String
-    Default: "https://raw.githubusercontent.com/your-org/your-repo/main/scripts"
-    Description: If using GitHub, specify the raw base URL to the scripts folder (no trailing slash)
+    Default: "https://raw.githubusercontent.com/sscargal/mvai/refs/heads/main"
+    Description: Required only if ScriptSource is 'github'. Specify the raw base URL to the scripts folder (no trailing slash)
 
   MemVergeGitHubToken:
     Type: String
@@ -79,6 +86,11 @@ Mappings:
   RegionMap:
     us-east-1:
       AMI: ami-0abcdef1234567890
+  ELBHostedZoneIds:
+    us-east-1:
+      ZoneId: Z35SXDOTRQ7X7K
+    us-west-2:
+      ZoneId: Z1H1FL5HABSF5
 
 Resources:
   WorkerSecurityGroup:
@@ -87,9 +99,17 @@ Resources:
       GroupDescription: "Security group for worker nodes with ALB access"
       VpcId: !Ref VPCID
       SecurityGroupIngress:
+        - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 31380
+          ToPort: 31380
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 31443
+          ToPort: 31443
           SourceSecurityGroupId: !Ref ALBSecurityGroup
       Tags:
         - Key: Name
@@ -101,6 +121,7 @@ Resources:
       GroupDescription: "Security group for control plane nodes"
       VpcId: !Ref VPCID
       SecurityGroupIngress:
+        - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
@@ -114,6 +135,7 @@ Resources:
       GroupDescription: "Security group for ALB"
       VpcId: !Ref VPCID
       SecurityGroupIngress:
+        - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
@@ -167,26 +189,26 @@ Resources:
           Fn::Base64: !Sub |
             #!/bin/bash
             # set -xe
-            exec > >(tee -i /var/log/worker-init.log) 2>&1
-            echo "Worker Node Initialization"
+            exec > >(tee -i /var/log/controlplane-init.log) 2>&1
+            echo "Control Plane Node Initialization"
             apt update -y && apt install -y unzip curl
             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
             unzip awscliv2.zip && ./aws/install
             
             if [ "${ScriptSource}" = "s3" ]; then
-              aws s3 cp s3://${ScriptS3Bucket}/worker.sh /tmp/worker.sh
+              aws s3 cp s3://${ScriptS3Bucket}/controlplane.sh /tmp/controlplane.sh
             else
-              curl -fsSL ${GitHubRepoRawURL}/worker.sh -o /tmp/worker.sh
+              curl -fsSL ${GitHubRepoRawURL}/controlplane.sh -o /tmp/controlplane.sh
             fi
             
-            chmod +x /tmp/worker.sh
+            chmod +x /tmp/controlplane.sh
             
             K3S_TOKEN=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='K3sJoinToken'].OutputValue" --output text)
             K3S_URL=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='ControlPlaneURL'].OutputValue" --output text)
             export K3S_TOKEN=$K3S_TOKEN
             export K3S_URL=$K3S_URL
             
-            /tmp/worker.sh
+            /tmp/controlplane.sh
         BlockDeviceMappings:
           - DeviceName: "/dev/sda1"
             Ebs:
@@ -258,23 +280,33 @@ Resources:
         - Key: Name
           Value: "MemVerge-WorkerNode"
           PropagateAtLaunch: true
+        - Key: kubernetes.io/cluster/memvergeai-cluster
+          Value: owned
+          PropagateAtLaunch: true
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+          PropagateAtLaunch: true
     DependsOn:
       - ControlPlaneASG
 
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
+      Name: MemVergeALB
+      Scheme: internet-facing
       Subnets:
         - !Ref SubnetID
-      Scheme: internet-facing
       SecurityGroups:
         - !Ref ALBSecurityGroup
+      Type: application
+      IpAddressType: ipv4
       Tags:
         - Key: Name
           Value: "MemVerge-ALB"
 
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: TargetGroup
     Properties:
       DefaultActions:
         - Type: forward
@@ -294,15 +326,31 @@ Resources:
   ALBRecord:
     Type: AWS::Route53::RecordSet
     Properties:
-      HostedZoneName: "memvergelab.com." # Replace with your actual hosted zone
+      HostedZoneName: "memvergelab.com." 
       Name: !Sub "${SubDomain}.memvergelab.com."
-      TTL: "60"
-      ResourceRecords:
-        - !GetAtt LoadBalancer.DNSName
-
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt LoadBalancer.DNSName
+        HostedZoneId: !FindInMap [ ELBHostedZoneIds, !Ref "AWS::Region", ZoneId ]
 
 Outputs:
   K3sJoinTokenSSMPath:
     Description: K3s Join Token is stored in AWS SSM Parameter Store
     Value: "/k3s/join-token"
+
+  WorkerSecurityGroupID:
+    Description: Security Group ID for Worker Nodes
+    Value: !Ref WorkerSecurityGroup
+
+  ALBSecurityGroupID:
+    Description: Security Group ID for ALB
+    Value: !Ref ALBSecurityGroup
+
+  ALBURL:
+    Description: Public DNS of the Application Load Balancer
+    Value: !GetAtt LoadBalancer.DNSName
+
+  ControlPlaneURL:
+    Description: K3s API URL
+    Value: !Sub "https://${ControlPlaneElasticIP}:6443"
 

@@ -42,7 +42,7 @@ CONTROL_PLANE_IP=$(aws ec2 describe-instances \
             "Name=instance-state-name,Values=running" \
   --query "Reservations[*].Instances[*].PublicIpAddress" \
   --output text | head -n1)
-echo "[K3S] Server URL: https://${CONTROL_PLANE_IP}:6443"
+echo "[K3S] Server URL: https://${ControlPlaneElasticIP}:6443"
 
 echo "[WAIT] Waiting for worker nodes to become Ready"
 

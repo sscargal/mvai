@@ -23,7 +23,7 @@ K3S_TOKEN=$(aws ssm get-parameter --name "/k3s/join-token" --with-decryption --q
 CONTROL_PLANE_IP=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=MemVerge-ControlPlane" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
 [ -z "$CONTROL_PLANE_IP" ] && { echo "[ERROR] Control Plane IP not found"; exit 1; }
 
-K3S_URL="https://${CONTROL_PLANE_IP}:6443"
+K3S_URL="https://${ControlPlaneElasticIP}:6443"
 
 curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s agent || { echo "[ERROR] K3s agent failed"; exit 1; }
 
