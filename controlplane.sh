@@ -43,7 +43,7 @@ CONTROL_PLANE_IP=$(aws ec2 describe-instances \
   --filters "Name=tag:Name,Values=MemVerge-ControlPlane" \
             "Name=instance-state-name,Values=running" \
   --query "Reservations[*].Instances[*].PublicIpAddress" \
-  --output text | head -n1)
+  --output text | head -n1) || { echo "[ERROR] Failed to retrieve Control Plane IP"; exit 1; }
 echo "[K3S] Server URL: https://${ControlPlaneElasticIP}:6443"
 
 echo "[WAIT] Waiting for worker nodes to become Ready"
@@ -128,7 +128,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-kubectl create namespace cattle-system
+kubectl create namespace cattle-system || true
 kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
     --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
     --type=kubernetes.io/dockerconfigjson
