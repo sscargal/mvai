@@ -23,12 +23,15 @@ echo "[HELM] Logging into GHCR"
 sleep 10
 helm registry logout ghcr.io/memverge || true
 helm registry login ghcr.io/memverge -u mv-customer-support -p $MEMVERGE_GITHUB_TOKEN
-if [ $? -eq 0 ]; then
-    kubectl create namespace cattle-system || true
-    kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
-        --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
-        --type=kubernetes.io/dockerconfigjson || true
+if [ $? -ne 0 ]; then
+    echo "[ERROR] Helm login failed. Exiting."
+    exit 1
 fi
+
+kubectl create namespace cattle-system || true
+kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
+    --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
+    --type=kubernetes.io/dockerconfigjson || true
 
 CONTROL_PLANE_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
 LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
