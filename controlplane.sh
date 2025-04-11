@@ -6,7 +6,7 @@ echo "[INIT] Control Plane Node Initialization"
 # Validate required tools
 command -v curl >/dev/null || { echo "[ERROR] curl not found"; exit 1; }
 command -v jq >/dev/null || apt-get install -y jq
-command -v aws >/dev/null || apt-get install -y unzip && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && ./aws/install
+command -v aws >/dev/null || apt-get install -y unzip && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
 
 echo "[INSTALL] Updating System & Installing Required Tools"
 apt-get update -y
@@ -38,16 +38,24 @@ if [ -z "$K3S_TOKEN" ]; then
 fi
 aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write token to SSM"; exit 1; }
 
+# Get the IP Address of the Control Plane
+CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
 # Get the IP Addresses of the Control Plane nodes, and select the first one if there is more than one
-CONTROL_PLANE_IP=$(aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=MemVerge-ControlPlane" \
-            "Name=instance-state-name,Values=running" \
-  --query "Reservations[*].Instances[*].PublicIpAddress" \
-  --output text | head -n1) || { echo "[ERROR] Failed to retrieve Control Plane IP"; exit 1; }
-echo "[K3S] Server URL: https://${ControlPlaneElasticIP}:6443"
+# Use this when we have a Highly-Available Control Plane environment
+# CONTROL_PLANE_IP=$(aws ec2 describe-instances \
+#  --filters "Name=tag:Name,Values=MemVerge-ControlPlane" \
+#            "Name=instance-state-name,Values=running" \
+#  --query "Reservations[*].Instances[*].PublicIpAddress" \
+#  --output text | head -n1) || { echo "[ERROR] Failed to retrieve Control Plane IP"; exit 1; }
+if [ -z "$CONTROL_PLANE_IP" ]; then
+  echo "[ERROR] Failed to get the Control Plane IP Address"
+  exit 1
+fi
+echo "[K3S] Server URL: https://${CONTROL_PLANE_IP}:6443"
 
 echo "[WAIT] Waiting for worker nodes to become Ready"
 
+# Obtain the EC2 Instance ID of the Control Plane node
 # 169.254.169.254 is always available to all EC2 instances and never changes across accounts or regions
 INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 if [ -z "$INSTANCE_ID" ]; then
@@ -55,17 +63,35 @@ if [ -z "$INSTANCE_ID" ]; then
   exit 1
 fi
 
-STACK_NAME=$(aws cloudformation describe-tags \
-  --filters "Name=resource-id,Values=$INSTANCE_ID" \
-  | jq -r '.Tags[] | select(.Key=="aws:cloudformation:stack-name") | .Value')
+# Get the CloudFormation StackID
+STACK_ID=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" --query 'Tags[?Key==`aws:cloudformation:stack-id`].Value' --output text)
+if [ -z "$STACK_ID" ]; then
+  echo "[ERROR] Could not determine the CloudFormation StackID from the EC2 tags"
+  exit 1
+fi
 
+# Use the StackID to get the StackName
+STACK_NAME=$(aws cloudformation describe-stacks --stack-id "$STACK_ID" --query 'Stacks[0].StackName' --output text)
 if [ -z "$STACK_NAME" ]; then
   echo "[ERROR] Could not determine CloudFormation Stack Name from EC2 tags"
   exit 1
 fi
 
+# Get Expected Worker Count
 EXPECTED_WORKERS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
-  --query "Stacks[0].Parameters[?ParameterKey=='WorkerNodeCount'].ParameterValue" --output text)
+    --query "Stacks[0].Parameters[?ParameterKey=='WorkerNodeCount'].ParameterValue" --output text)
+
+# STACK_NAME=$(aws cloudformation describe-stacks \
+#   --filters "Name=resource-id,Values=$INSTANCE_ID" \
+#   | jq -r '.Tags[] | select(.Key=="aws:cloudformation:stack-name") | .Value')
+# 
+# if [ -z "$STACK_NAME" ]; then
+#   echo "[ERROR] Could not determine CloudFormation Stack Name from EC2 tags"
+#   exit 1
+# fi
+# 
+# EXPECTED_WORKERS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+#   --query "Stacks[0].Parameters[?ParameterKey=='WorkerNodeCount'].ParameterValue" --output text)
 
 EXPECTED_NODES=$((EXPECTED_WORKERS + 1))
 
