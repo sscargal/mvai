@@ -1,5 +1,11 @@
 #!/bin/bash
 # set -xe
+# Validate environment variables
+if [ -z "$MEMVERGE_VERSION" ] || [ -z "$MEMVERGE_SUBDOMAIN" ] || [ -z "$MEMVERGE_GITHUB_TOKEN" ]; then
+    echo "[ERROR] Missing required environment variables. Exiting."
+    exit 1
+fi
+
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 echo "[INIT] MemVerge.ai installation starting..."
@@ -16,11 +22,9 @@ helm repo update
 echo "[CERT-MANAGER] Installing cert-manager"
 kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
 helm install cert-manager jetstack/cert-manager --namespace cert-manager --set crds.enabled=true
-sleep 60
-kubectl get pods -n cert-manager || echo "[WARN] cert-manager may not be ready"
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=cert-manager -n cert-manager --timeout=300s || echo "[WARN] cert-manager may not be ready"
 
 echo "[HELM] Logging into GHCR"
-sleep 10
 helm registry logout ghcr.io/memverge || true
 helm registry login ghcr.io/memverge -u mv-customer-support -p $MEMVERGE_GITHUB_TOKEN
 if [ $? -ne 0 ]; then
@@ -45,5 +49,9 @@ helm install --namespace cattle-system mvai oci://ghcr.io/memverge/charts/mvai \
     --set ingress.tls.source=letsEncrypt \
     --set letsEncrypt.email=support@memverge.ai \
     --set letsEncrypt.ingress.class=traefik
+if [ $? -ne 0 ]; then
+    echo "[ERROR] Helm install failed. Exiting."
+    exit 1
+fi
 
 echo "[SUCCESS] MemVerge.ai Installed"
