@@ -1,4 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
+
 Description: >
   CloudFormation template for setting up a MemVerge.ai PoC environment with ALB integration.
 
@@ -17,25 +18,23 @@ Parameters:
 
   AMIControlPlane:
     Type: AWS::EC2::Image::Id
+    Default: ami-0c3b809fcf2445b6a
     Description: AMI ID for the Control Plane instance
 
   AMIWorkerNode:
     Type: AWS::EC2::Image::Id
+    Default: ami-0c3b809fcf2445b6a
     Description: AMI ID for the Worker Node instance
 
   InstanceTypeControlPlane:
     Type: String
-    Default: "m5.2xlarge"
-    Description: EC2 instance type for Control Plane (8 vCPUs, 16 GB RAM)
+    Default: "m5.xlarge"
+    Description: EC2 instance type for Control Plane (4 vCPUs, 16 GB RAM)
 
   InstanceTypeWorker:
     Type: String
-    Default: "g5.4xlarge"
-    Description: EC2 instance type for Worker Node (16 vCPUs, 64 GB RAM, 1 GPU)
-
-  ControlPlaneElasticIP:
-    Type: String
-    Description: "The Elastic IP address assigned to the Control Plane (e.g., 203.0.113.5)"
+    Default: "g5.2xlarge"
+    Description: EC2 instance type for Worker Node (16 vCPUs, 32 GB RAM, 1 GPU)
 
   MemVergeVersion:
     Type: String
@@ -44,63 +43,27 @@ Parameters:
 
   SubDomain:
     Type: String
-    Description: Sub-domain on memvergelab.com for MemVerge.ai Load Balancer access, e.g. "demo" will map to "demo.memvegelab.com"
+    Description: Sub-domain for MemVerge.ai Load Balancer access
 
   WorkerNodeCount:
     Type: Number
     Default: 1
     Description: Number of worker nodes to create
 
-  ControlPlaneCount:
-    Type: Number
-    Default: 1
-    Description: Number of control plane nodes to create (1 or 3)
-
-  ScriptSource:
-    Type: String
-    AllowedValues:
-      - s3
-      - github
-    Default: github
-    Description: >
-      Select the source of your scripts.
-      If 's3' is selected, fill in 'ScriptS3Bucket'.
-      If 'github' is selected, fill in 'GitHubRepoRawURL'.
-
-  ScriptS3Bucket:
-    Type: String
-    Default: "memverge-ai-poc-userdata-script-amd"
-    Description: Required only if ScriptSource is 's3'. Specify the bucket name (no trailing slash)
-
-  GitHubRepoRawURL:
-    Type: String
-    Default: "https://raw.githubusercontent.com/sscargal/mvai/refs/heads/main"
-    Description: Required only if ScriptSource is 'github'. Specify the raw base URL to the scripts folder (no trailing slash)
-
   MemVergeGitHubToken:
     Type: String
     NoEcho: true
     Description: GitHub token for accessing MemVerge Helm chart registry
 
+  GitHubRepoPath:
+    Type: String
+    Default: "https://raw.githubusercontent.com/sscargal/mvai/main/"
+    Description: GitHub repository path for script files
+
 Mappings:
   RegionMap:
     us-east-1:
-      ami: ami-0ed9277fb7eb570c9
-    us-east-2:
-      ami: ami-002068ed284fb165b
-    us-west-1:
-      ami: ami-03af6a70ccd8cb578
-    us-west-2:
-      ami: ami-00f7e5c52c0f43726
-  ELBHostedZoneIds:
-    us-east-1:
-      ZoneId: Z35SXDOTRQ7X7K
-    us-east-2:
-      ZoneId: Z3AADJGX6KTTL2
-    us-west-1:
-      ZoneId: Z368ELLRRE2KJ0
-    us-west-2:
-      ZoneId: Z1H1FL5HABSF5
+      AMI: ami-0abcdef1234567890
 
 Resources:
   WorkerSecurityGroup:
@@ -125,20 +88,6 @@ Resources:
         - Key: Name
           Value: "MemVerge-Worker-SG"
 
-  ControlPlaneSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: "Security group for control plane nodes"
-      VpcId: !Ref VPCID
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: "MemVerge-ControlPlane-SG"
-
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -148,6 +97,10 @@ Resources:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
@@ -167,14 +120,38 @@ Resources:
             Action:
               - sts:AssumeRole
       Policies:
-       - PolicyName: S3ReadAccessPolicy
-         PolicyDocument:
-           Version: "2012-10-17"
-           Statement:
-             - Effect: Allow
-               Action:
-                 - s3:GetObject
-               Resource: !Sub "arn:aws:s3:::${ScriptS3Bucket}/*"
+        - PolicyName: SSMReadAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/k3s/join-token"
+        - PolicyName: EC2DescribeInstancesPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                Resource: "*"
+        - PolicyName: CloudFormationDescribeTagsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeTags
+                Resource: "*"
+        - PolicyName: CloudFormationDescribeStacksPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: "*"
 
   MemVergeInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -183,61 +160,50 @@ Resources:
       Roles:
         - !Ref MemVergeInstanceRole
 
-  ControlPlaneLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
+  ControlPlaneInstance:
+    Type: AWS::EC2::Instance
     Properties:
-      LaunchTemplateName: memverge-controlplane-launch-template
-      LaunchTemplateData:
-        ImageId: !Ref AMIControlPlane
-        InstanceType: !Ref InstanceTypeControlPlane
-        KeyName: !Ref KeyPairName
-        IamInstanceProfile:
-          Name: !Ref MemVergeInstanceProfile
-        SecurityGroupIds:
-          - !Ref ControlPlaneSecurityGroup
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            # set -xe
-            exec > >(tee -i /var/log/controlplane-init.log) 2>&1
-            echo "Control Plane Node Initialization"
-            apt update -y && apt install -y unzip curl
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip awscliv2.zip && ./aws/install
-            
-            if [ "${ScriptSource}" = "s3" ]; then
-              aws s3 cp s3://${ScriptS3Bucket}/controlplane.sh /tmp/controlplane.sh
-            else
-              curl -fsSL ${GitHubRepoRawURL}/controlplane.sh -o /tmp/controlplane.sh
-            fi
-            
-            chmod +x /tmp/controlplane.sh
-            
-            K3S_TOKEN=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='K3sJoinToken'].OutputValue" --output text)
-            K3S_URL=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='ControlPlaneURL'].OutputValue" --output text)
-            export K3S_TOKEN=$K3S_TOKEN
-            export K3S_URL=$K3S_URL
-            
-            /tmp/controlplane.sh
-        BlockDeviceMappings:
-          - DeviceName: "/dev/sda1"
-            Ebs:
-              VolumeSize: 60
-  ControlPlaneASG:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      LaunchTemplate:
-        LaunchTemplateId: !Ref ControlPlaneLaunchTemplate
-        Version: !GetAtt ControlPlaneLaunchTemplate.LatestVersionNumber
-      MinSize: !Ref ControlPlaneCount
-      MaxSize: !Ref ControlPlaneCount
-      DesiredCapacity: !Ref ControlPlaneCount
-      VPCZoneIdentifier:
-        - !Ref SubnetID
+      InstanceType: !Ref InstanceTypeControlPlane
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetID
+      ImageId: !Ref AMIControlPlane
+      SecurityGroupIds:
+        - !Ref WorkerSecurityGroup
+      IamInstanceProfile: !Ref MemVergeInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            VolumeSize: 60
       Tags:
         - Key: Name
           Value: "MemVerge-ControlPlane"
-          PropagateAtLaunch: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt update -y
+          apt install -y curl jq unzip
+          curl -s ${GitHubRepoPath}controlplane.sh -o controlplane.sh
+          chmod +x controlplane.sh
+          export MEMVERGE_VERSION=${MemVergeVersion}
+          export MEMVERGE_SUBDOMAIN=${SubDomain}
+          export MEMVERGE_GITHUB_TOKEN=${MemVergeGitHubToken}
+          ./controlplane.sh
+          # Wait for K3s to be ready
+          sleep 60
+          curl -s ${GitHubRepoPath}install-mvai.sh -o install-mvai.sh
+          chmod +x install-mvai.sh
+          ./install-mvai.sh
+
+  ControlPlaneEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ControlPlaneEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref ControlPlaneInstance
+      EIP: !Ref ControlPlaneEIP
 
   WorkerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -254,27 +220,12 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            # set -xe
-            exec > >(tee -i /var/log/worker-init.log) 2>&1
-            echo "Worker Node Initialization"
-            apt update -y && apt install -y unzip curl
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip awscliv2.zip && ./aws/install
-            
-            if [ "${ScriptSource}" = "s3" ]; then
-              aws s3 cp s3://${ScriptS3Bucket}/worker.sh /tmp/worker.sh
-            else
-              curl -fsSL ${GitHubRepoRawURL}/worker.sh -o /tmp/worker.sh
-            fi
-            
-            chmod +x /tmp/worker.sh
-            
-            K3S_TOKEN=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='K3sJoinToken'].OutputValue" --output text)
-            K3S_URL=$(aws cloudformation describe-stacks --stack-name ${AWS::StackName} --query "Stacks[0].Outputs[?OutputKey=='ControlPlaneURL'].OutputValue" --output text)
-            export K3S_TOKEN=$K3S_TOKEN
-            export K3S_URL=$K3S_URL
-            
-            /tmp/worker.sh
+            apt update -y
+            apt install -y curl
+            curl -s ${GitHubRepoPath}worker.sh -o worker.sh
+            chmod +x worker.sh
+            ./worker.sh
+
   WorkerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -296,57 +247,11 @@ Resources:
         - Key: kubernetes.io/role/internal-elb
           Value: "1"
           PropagateAtLaunch: true
-    DependsOn:
-      - ControlPlaneASG
-
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Name: MemVergeALB
-      Scheme: internet-facing
-      Subnets:
-        - !Ref SubnetID
-      SecurityGroups:
-        - !Ref ALBSecurityGroup
-      Type: application
-      IpAddressType: ipv4
-      Tags:
-        - Key: Name
-          Value: "MemVerge-ALB"
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    DependsOn: TargetGroup
-    Properties:
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Port: 31380
-      Protocol: HTTP
-      VpcId: !Ref VPCID
-      TargetType: instance
-
-  ALBRecord:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneName: "memvergelab.com." 
-      Name: !Sub "${SubDomain}.memvergelab.com."
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt LoadBalancer.DNSName
-        HostedZoneId: !FindInMap [ ELBHostedZoneIds, !Ref "AWS::Region", ZoneId ]
 
 Outputs:
-  K3sJoinTokenSSMPath:
-    Description: K3s Join Token is stored in AWS SSM Parameter Store
-    Value: "/k3s/join-token"
+  ControlPlanePublicIP:
+    Description: Public IP of the Control Plane
+    Value: !GetAtt ControlPlaneEIP.PublicIp
 
   WorkerSecurityGroupID:
     Description: Security Group ID for Worker Nodes
@@ -356,11 +261,10 @@ Outputs:
     Description: Security Group ID for ALB
     Value: !Ref ALBSecurityGroup
 
-  ALBURL:
-    Description: Public DNS of the Application Load Balancer
-    Value: !GetAtt LoadBalancer.DNSName
+  ControlPlaneElasticIP: # Add this output
+    Description: Elastic IP of the Control Plane
+    Value: !GetAtt ControlPlaneEIP.PublicIp
 
-  ControlPlaneURL:
-    Description: K3s API URL
-    Value: !Sub "https://${ControlPlaneElasticIP}:6443"
-
+  ControlPlaneInstanceId: # add this output
+      Description: Instance Id of the Control Plane
+      Value: !Ref ControlPlaneInstance
