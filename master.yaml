@@ -120,13 +120,14 @@ Resources:
             Action:
               - sts:AssumeRole
       Policies:
-        - PolicyName: SSMReadAccessPolicy
+        - PolicyName: SSMReadWriteAccessPolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
+                  - ssm:PutParameter
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/k3s/join-token"
         - PolicyName: EC2DescribeInstancesPolicy
           PolicyDocument:
