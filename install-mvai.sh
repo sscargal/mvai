@@ -20,26 +20,27 @@ sleep 60
 kubectl get pods -n cert-manager || echo "[WARN] cert-manager may not be ready"
 
 echo "[HELM] Logging into GHCR"
-mkdir -p $HOME/.config/helm/registry
+sleep 10
 helm registry logout ghcr.io/memverge || true
 helm registry login ghcr.io/memverge -u mv-customer-support -p $MEMVERGE_GITHUB_TOKEN
-
-kubectl create namespace cattle-system || true
-kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
-  --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
-  --type=kubernetes.io/dockerconfigjson || true
+if [ $? -eq 0 ]; then
+    kubectl create namespace cattle-system || true
+    kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
+        --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
+        --type=kubernetes.io/dockerconfigjson || true
+fi
 
 CONTROL_PLANE_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
 LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
 
 echo "[MVAI] Installing MemVerge.ai using the Helm Chart"
 helm install --namespace cattle-system mvai oci://ghcr.io/memverge/charts/mvai \
-  --wait --timeout 20m \
-  --version ${MemVergeVersion} \
-  --set hostname=$LOADBALANCER_HOSTNAME \
-  --set bootstrapPassword=admin \
-  --set ingress.tls.source=letsEncrypt \
-  --set letsEncrypt.email=support@memverge.ai \
-  --set letsEncrypt.ingress.class=traefik
+    --wait --timeout 20m \
+    --version ${MemVergeVersion} \
+    --set hostname=$LOADBALANCER_HOSTNAME \
+    --set bootstrapPassword=admin \
+    --set ingress.tls.source=letsEncrypt \
+    --set letsEncrypt.email=support@memverge.ai \
+    --set letsEncrypt.ingress.class=traefik
 
 echo "[SUCCESS] MemVerge.ai Installed"
