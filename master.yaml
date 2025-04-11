@@ -189,10 +189,10 @@ Resources:
           export MEMVERGE_GITHUB_TOKEN=${MemVergeGitHubToken}
           ./controlplane.sh
           # Wait for K3s to be ready
-          sleep 60
-          curl -s ${GitHubRepoPath}install-mvai.sh -o install-mvai.sh
-          chmod +x install-mvai.sh
-          ./install-mvai.sh
+          # sleep 60
+          # curl -s ${GitHubRepoPath}install-mvai.sh -o install-mvai.sh
+          # chmod +x install-mvai.sh
+          # ./install-mvai.sh
 
   ControlPlaneEIP:
     Type: AWS::EC2::EIP
