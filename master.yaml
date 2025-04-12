@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudFormation template for setting up a MemVerge.ai PoC environment with ALB integration.
+  CloudFormation template for setting up a MemVerge.ai PoC environment with ALB integration. (Updated for unified node security group, fixed circular dependency)
 
 Parameters:
   VPCID:
@@ -63,31 +63,48 @@ Parameters:
 Mappings:
   RegionMap:
     us-east-1:
-      AMI: ami-0abcdef1234567890
+      AMI: ami-0abcdef1234567890 # Example placeholder - ensure this is valid or remove if unused
 
 Resources:
-  WorkerSecurityGroup:
+  # Unified Security Group for all nodes (Control Plane and Workers)
+  NodeSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Security group for worker nodes with ALB access"
+      GroupDescription: "Unified security group for Control Plane and Worker nodes"
       VpcId: !Ref VPCID
       SecurityGroupIngress:
+        # Rules allowing external access are defined here
+        # Allow SSH from the Internet
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
+        # Allow HTTP from the Internet
         - IpProtocol: tcp
-          FromPort: 31380
-          ToPort: 31380
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        # Allow HTTPS from the Internet
         - IpProtocol: tcp
-          FromPort: 31443
-          ToPort: 31443
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        # Self-referencing rule moved to a separate resource to avoid circular dependency
       Tags:
         - Key: Name
-          Value: "MemVerge-Worker-SG"
+          Value: "MemVerge-Node-SG"
 
+  # Separate Ingress rule to allow all traffic within the NodeSecurityGroup
+  NodeSecurityGroupSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup           # Apply rule TO NodeSecurityGroup
+      IpProtocol: "-1"                         # All protocols
+      FromPort: -1                             # All ports
+      ToPort: -1
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId # Allow traffic FROM NodeSecurityGroup
+
+  # ALB Security Group remains unchanged
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -128,7 +145,7 @@ Resources:
                 Action:
                   - ssm:GetParameter
                   - ssm:PutParameter
-                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*" # Allow all parameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*"
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -179,7 +196,7 @@ Resources:
       SubnetId: !Ref SubnetID
       ImageId: !Ref AMIControlPlane
       SecurityGroupIds:
-        - !Ref WorkerSecurityGroup
+        - !Ref NodeSecurityGroup # Use the unified node security group
       IamInstanceProfile: !Ref MemVergeInstanceProfile
       BlockDeviceMappings:
         - DeviceName: "/dev/sda1"
@@ -236,7 +253,7 @@ Resources:
             DeviceIndex: 0
             SubnetId: !Ref SubnetID
             Groups:
-              - !Ref WorkerSecurityGroup
+              - !Ref NodeSecurityGroup # Use the unified node security group
 
   WorkerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -265,18 +282,19 @@ Outputs:
     Description: Public IP of the Control Plane
     Value: !GetAtt ControlPlaneEIP.PublicIp
 
-  WorkerSecurityGroupID:
-    Description: Security Group ID for Worker Nodes
-    Value: !Ref WorkerSecurityGroup
+  NodeSecurityGroupID:
+    Description: Security Group ID for Control Plane and Worker Nodes
+    Value: !Ref NodeSecurityGroup
 
   ALBSecurityGroupID:
     Description: Security Group ID for ALB
     Value: !Ref ALBSecurityGroup
 
-  ControlPlaneElasticIP: # Add this output
+  ControlPlaneElasticIP:
     Description: Elastic IP of the Control Plane
     Value: !GetAtt ControlPlaneEIP.PublicIp
 
-  ControlPlaneInstanceId: # add this output
-      Description: Instance Id of the Control Plane
-      Value: !Ref ControlPlaneInstance
+  ControlPlaneInstanceId:
+    Description: Instance Id of the Control Plane
+    Value: !Ref ControlPlaneInstance
+
