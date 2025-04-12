@@ -2,14 +2,15 @@
 
 echo "[INIT] Control Plane Node Initialization"
 
-# Validate required tools
-command -v curl >/dev/null || { echo "[ERROR] curl not found"; exit 1; }
-command -v jq >/dev/null || apt-get update -y && apt-get install -y jq -y
-command -v aws >/dev/null || apt-get update -y && apt-get install -y unzip -y && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
-
 echo "[INSTALL] Updating System & Installing Required Tools"
-apt-get update -y
-apt-get install -y ca-certificates curl unzip jq -y
+apt update -y
+apt install -y ca-certificates curl unzip jq
+
+# Validate required tools
+command -v curl >/dev/null || apt install -y curl
+command -v jq >/dev/null || apt install -y jq
+command -v unzip >/dev/null || apt install -y unzip
+command -v aws >/dev/null || curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
 
 echo "[INSTALL] Installing Docker"
 # Use the Docker Convenience script
