@@ -6,6 +6,12 @@ echo "[INIT] Worker Node Initialization"
 apt update -y
 apt install -y unzip curl jq apt-transport-https ca-certificates curl software-properties-common
 
+# Validate required tools
+command -v curl >/dev/null || apt-get install -y curl
+command -v jq >/dev/null || apt-get install -y jq
+command -v unzip >/dev/null || apt-get install -y unzip
+command -v aws >/dev/null || curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
+
 echo "[INSTALL] Docker"
 # Use the Docker Convenience script
 curl -fsSL https://get.docker.com -o get-docker.sh
