@@ -112,7 +112,7 @@ echo "[SUCCESS] Docker check/setup complete. Docker is active."
 # Wait for the control plane to become ready
 echo "[WAIT] Waiting for Control Plane to become available"
 
-timeout=600 # 10 minutes
+timeout=1800 # 30 minutes
 interval=30 # 30 seconds
 elapsed=0
 control_plane_ready=false # Flag to track success
