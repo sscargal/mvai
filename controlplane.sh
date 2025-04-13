@@ -37,7 +37,8 @@ fi
 aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s Join Token to SSM"; exit 1; }
 
 # Get the IP Address of the Control Plane (this node)
-CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+# CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4) # Public/Elastic IP
+CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) # Private IP
 if [ -z "$CONTROL_PLANE_IP" ]; then
     echo "[ERROR] Failed to get the Control Plane IP Address"
     exit 1
