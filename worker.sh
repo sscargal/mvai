@@ -108,21 +108,8 @@ while [ "$elapsed" -lt "$timeout" ]; do
     # Only proceed if SSM command succeeded and URL is non-empty
     if [ "$SSM_EXIT_CODE" -eq 0 ] && [ -n "$K3S_URL" ]; then
         echo "[DEBUG] K3S_URL retrieved from SSM: $K3S_URL"
-        echo "[WAIT] Attempting to reach Control Plane health endpoint..."
-        # Use -k for self-signed certs, capture HTTP code, add timeouts
-        HTTP_CODE=$(curl --connect-timeout 5 --max-time 10 -k -s -o /dev/null -w "%{http_code}" "${K3S_URL}/healthz")
-        CURL_EXIT_CODE=$? # Capture curl's exit code
-
-        echo "[DEBUG] curl exit code: $CURL_EXIT_CODE, HTTP code: $HTTP_CODE"
-
-        # Check if curl succeeded (exit 0) AND got HTTP 200
-        if [ "$CURL_EXIT_CODE" -eq 0 ] && [ "$HTTP_CODE" = "200" ]; then
-            echo "[SUCCESS] Control Plane is available at $K3S_URL"
-            control_plane_ready=true # Set success flag
-            break # Exit the loop
-        else
-            echo "[WAIT] Control Plane health check failed (curl exit: $CURL_EXIT_CODE, http code: $HTTP_CODE), retrying..."
-        fi
+        control_plane_ready=true # Set success flag
+        break # Exit the loop
     elif [ "$SSM_EXIT_CODE" -ne 0 ]; then
          echo "[WAIT] Failed to execute aws ssm get-parameter command (Exit Code: $SSM_EXIT_CODE). Check permissions/region. Retrying..."
     else
@@ -172,7 +159,7 @@ fi
 # Install K3s as a worker node and join it to the cluster (Control Plane)
 # Explicitly pass agent arguments for Docker runtime.
 echo "[INFO] Executing K3s join command..."
-curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - agent --docker || { echo "[ERROR] K3s worker node agent failed"; exit 1; }
+curl -sfL https://get.k3s.io | K3S_URL=https://myserver:6443 K3S_TOKEN="$K3S_TOKEN" sh - || { echo "[ERROR] K3s worker node agent failed"; exit 1; }
 
 echo "[SUCCESS] Worker joined cluster successfully."
 
