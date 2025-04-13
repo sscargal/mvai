@@ -124,29 +124,37 @@ fi
 
 echo "[INFO] Storing K3S_URL (${K3S_URL}) in SSM using --cli-input-json"
 
-# Prepare JSON input
-# Using printf for safer JSON string construction with variables
-JSON_INPUT=$(printf '{
-  "Name": "/k3s/url",
-  "Value": "%s",
-  "Type": "String",
-  "Overwrite": true
-}' "$K3S_URL") # Safely injects K3S_URL into the Value field
-
-# --- Option A: Pass JSON via stdin ---
-echo "$JSON_INPUT" | aws ssm put-parameter --cli-input-json file:///dev/stdin --region "$AWS_DEFAULT_REGION"
-
-# --- Option B: Pass JSON via temporary file (different from the first method) ---
-# TMP_JSON_FILE=$(mktemp)
-# echo "$JSON_INPUT" > "$TMP_JSON_FILE"
-# aws ssm put-parameter --cli-input-json "file://${TMP_JSON_FILE}" --region "$AWS_DEFAULT_REGION"
-# rm -f "$TMP_JSON_FILE"
-
-# Check the exit status
-if [ $? -ne 0 ]; then
-  echo "[ERROR] Failed to write K3s URL to SSM using --cli-input-json"
+# Create a temporary file to hold the literal URL string
+TMP_FILE=$(mktemp)
+if [ -z "$TMP_FILE" ]; then
+  echo "[ERROR] Failed to create temporary file."
   exit 1
 fi
+
+# Write the literal URL string into the temporary file
+# Using printf is slightly safer than echo for arbitrary strings
+printf "%s" "$K3S_URL" > "$TMP_FILE"
+
+echo "[INFO] Storing K3S URL from temporary file ${TMP_FILE} into SSM parameter /k3s/url"
+
+# Call aws ssm put-parameter using the file:// prefix
+# The CLI will read the content of TMP_FILE as the literal value
+aws ssm put-parameter \
+  --name "/k3s/url" \
+  --value "file://${TMP_FILE}" \
+  --type "String" \
+  --overwrite \
+  --region "$AWS_DEFAULT_REGION"
+
+# Check the exit status of the aws command
+if [ $? -ne 0 ]; then
+  echo "[ERROR] Failed to write K3s URL to SSM using file://${TMP_FILE}"
+  rm -f "$TMP_FILE" # Clean up temp file on error
+  exit 1
+fi
+
+# Clean up the temporary file on success
+rm -f "$TMP_FILE"
 
 echo "[SUCCESS] Successfully stored K3s URL in SSM."
 
