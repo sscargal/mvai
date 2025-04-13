@@ -146,8 +146,7 @@ if [ "$control_plane_ready" = false ]; then
     # If we are here, the fallback succeeded in getting an IP, constructing a URL, and health check passed.
 fi
 
-# Proceed using the K3S_URL found either via SSM or the fallback
-echo "[K3S] Joining cluster using URL: $K3S_URL"
+echo "[INFO] Getting K3S Token from SSM"
 K3S_TOKEN=$(aws ssm get-parameter --name "/k3s/join-token" --with-decryption --query "Parameter.Value" --output text)
 if [ -z "$K3S_TOKEN" ]; then
    echo "[ERROR] Failed to get the K3s Control Plane Token from AWS SSM. Exiting."
@@ -155,9 +154,9 @@ if [ -z "$K3S_TOKEN" ]; then
 fi
 
 # Install K3s as a worker node and join it to the cluster (Control Plane)
-# Explicitly pass agent arguments for Docker runtime.
 echo "[INFO] Executing K3s join command..."
-curl -sfL https://get.k3s.io | K3S_URL=https://myserver:6443 K3S_TOKEN="$K3S_TOKEN" sh - || { echo "[ERROR] K3s worker node agent failed"; exit 1; }
+echo "[K3S] Joining cluster using URL: $K3S_URL and TOKEN: $K3S_TOKEN"
+curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh - || { echo "[ERROR] K3s worker node agent failed"; exit 1; }
 
 echo "[SUCCESS] Worker joined cluster successfully."
 
