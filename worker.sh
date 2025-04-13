@@ -24,7 +24,8 @@ if [ -z "$AWS_DEFAULT_REGION" ] || [ "$AWS_DEFAULT_REGION" == "null" ]; then
 else
   # Optional: Set AWS_REGION too for tools that might look for it instead.
   export AWS_REGION=${AWS_REGION:-$AWS_DEFAULT_REGION}
-  echo "[INFO] Using AWS Region: ${AWS_DEFAULT_REGION}"
+  echo "[INFO] Using AWS Region: ${AWS_REGION}"
+  echo "[INFO] Using AWS Default Region: ${AWS_DEFAULT_REGION}"
 fi
 
 apt update -y
@@ -120,7 +121,7 @@ control_plane_ready=false # Flag to track success
 while [ "$elapsed" -lt "$timeout" ]; do
     echo "[WAIT] Checking SSM for Control Plane URL..."
     # Fetch URL, suppress stderr if parameter not found yet
-    K3S_URL=$(aws ssm get-parameter --name "/k3s/url" --with-decryption --query "Parameter.Value" --output text --region $AWS_REGION 2>/dev/null)
+    K3S_URL=$(aws ssm get-parameter --name "/k3s/url" --with-decryption --query "Parameter.Value" --output text --region $AWS_DEFAULT_REGION 2>/dev/null)
     SSM_EXIT_CODE=$? # Check if SSM command was successful
 
     # Only proceed if SSM command succeeded and URL is non-empty
@@ -144,7 +145,7 @@ if [ "$control_plane_ready" = false ]; then
     echo "[ERROR] Timeout or failure: Control Plane did not become ready via SSM URL after $((timeout / 60))m."
     echo "[INFO] Attempting fallback: Get Control Plane IP via EC2 API..."
     # Ensure AWS CLI has region configured correctly (usually via instance metadata)
-    CONTROL_PLANE_IP=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=MemVerge-ControlPlane" "Name=instance-state-name,Values=running" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text --region $AWS_REGION)
+    CONTROL_PLANE_IP=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=MemVerge-ControlPlane" "Name=instance-state-name,Values=running" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text --region $AWS_DEFAULT_REGION)
 
     if [ -n "$CONTROL_PLANE_IP" ]; then
         echo "[INFO] Fallback successful. Found running Control Plane IP: $CONTROL_PLANE_IP"
@@ -167,7 +168,7 @@ if [ "$control_plane_ready" = false ]; then
 fi
 
 echo "[INFO] Getting K3S Token from SSM"
-K3S_TOKEN=$(aws ssm get-parameter --name "/k3s/join-token" --with-decryption --query "Parameter.Value" --output text --region $AWS_REGION)
+K3S_TOKEN=$(aws ssm get-parameter --name "/k3s/join-token" --with-decryption --query "Parameter.Value" --output text --region $AWS_DEFAULT_REGION)
 if [ -z "$K3S_TOKEN" ]; then
    echo "[ERROR] Failed to get the K3s Control Plane Token from AWS SSM. Exiting."
    exit 1
