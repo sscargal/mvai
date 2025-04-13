@@ -32,10 +32,57 @@ command -v jq >/dev/null || apt install -y jq
 command -v unzip >/dev/null || apt install -y unzip
 command -v aws >/dev/null || curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -q awscliv2.zip && ./aws/install
 
-echo "[INSTALL] Installing Docker"
-# Use the Docker Convenience script
-curl -fsSL https://get.docker.com -o get-docker.sh
-sh ./get-docker.sh
+echo "[INSTALL] Docker Check & Setup"
+# Check if Docker command exists
+if command -v docker >/dev/null 2>&1; then
+    echo "[INFO] Docker is already installed. Verifying service status."
+    DOCKER_VERSION=$(docker --version)
+    echo "[INFO] Docker version: $DOCKER_VERSION"
+
+    # Ensure Docker service is enabled and active
+    if ! systemctl is-enabled --quiet docker; then
+         echo "[INFO] Docker service is not enabled. Enabling..."
+         systemctl enable docker || echo "[WARN] Failed to enable Docker service."
+    else
+         echo "[INFO] Docker service is already enabled."
+    fi
+    if ! systemctl is-active --quiet docker; then
+        echo "[INFO] Docker service is not active. Starting..."
+        systemctl start docker || echo "[WARN] Failed to start Docker service."
+    else
+         echo "[INFO] Docker service is already active."
+    fi
+else
+    # Docker not found, proceed with installation
+    echo "[INFO] Docker not found. Proceeding with installation using get-docker.sh script."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    # Run the installation script
+    if sh ./get-docker.sh; then
+        echo "[SUCCESS] Docker installed successfully via get-docker.sh."
+        # Ensure Docker is enabled and started after fresh install
+        echo "[INFO] Enabling and starting Docker service..."
+        systemctl enable docker && systemctl start docker
+        if [ $? -ne 0 ]; then
+             echo "[WARN] Failed to enable or start Docker service after installation."
+        else
+             echo "[INFO] Docker service enabled and started."
+        fi
+    else
+        echo "[ERROR] Docker installation using get-docker.sh failed."
+        # Clean up the script even on failure
+        rm -f get-docker.sh
+        exit 1
+    fi
+    # Clean up the script on success
+    rm -f get-docker.sh
+fi
+
+# Final verification that the Docker daemon is running and docker command works
+if ! docker info > /dev/null 2>&1; then
+   echo "[ERROR] Docker command is available, but Docker daemon does not seem to be running correctly. Exiting."
+   exit 1
+fi
+echo "[SUCCESS] Docker check/setup complete. Docker is active."
 
 systemctl enable docker || echo "[ERROR] Failed to enable the Docker systemd service"
 systemctl start docker || echo "[ERROR] Failed to start the Docker systemd service"
