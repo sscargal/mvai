@@ -115,7 +115,40 @@ fi
 # Store the Control Plane IP Address in AWS SSM so the Worker can read it and join the cluster.
 K3S_URL="https://${CONTROL_PLANE_IP}:6443"
 echo "[K3S] Server URL: $K3S_URL"
-aws ssm put-parameter --name "/k3s/url" --value "$K3S_URL" --type "String" --overwrite --region $AWS_DEFAULT_REGION || { echo "[ERROR] Failed to write K3s URL to SSM"; exit 1; }
+
+# Ensure K3S_URL is not empty
+if [ -z "$K3S_URL" ]; then
+  echo "[ERROR] K3S_URL variable is empty before attempting to store in SSM."
+  exit 1
+fi
+
+echo "[INFO] Storing K3S_URL (${K3S_URL}) in SSM using --cli-input-json"
+
+# Prepare JSON input
+# Using printf for safer JSON string construction with variables
+JSON_INPUT=$(printf '{
+  "Name": "/k3s/url",
+  "Value": "%s",
+  "Type": "String",
+  "Overwrite": true
+}' "$K3S_URL") # Safely injects K3S_URL into the Value field
+
+# --- Option A: Pass JSON via stdin ---
+echo "$JSON_INPUT" | aws ssm put-parameter --cli-input-json file:///dev/stdin --region "$AWS_DEFAULT_REGION"
+
+# --- Option B: Pass JSON via temporary file (different from the first method) ---
+# TMP_JSON_FILE=$(mktemp)
+# echo "$JSON_INPUT" > "$TMP_JSON_FILE"
+# aws ssm put-parameter --cli-input-json "file://${TMP_JSON_FILE}" --region "$AWS_DEFAULT_REGION"
+# rm -f "$TMP_JSON_FILE"
+
+# Check the exit status
+if [ $? -ne 0 ]; then
+  echo "[ERROR] Failed to write K3s URL to SSM using --cli-input-json"
+  exit 1
+fi
+
+echo "[SUCCESS] Successfully stored K3s URL in SSM."
 
 # Ensure we get the correct number of worker nodes for this CloudFormation stack
 if [ -z "$WORKER_NODE_COUNT" ]; then
