@@ -2,6 +2,26 @@
 
 echo "[INIT] Control Plane Node Initialization"
 
+echo "[AWS] Detecting the Default Region"
+
+# Check if AWS_DEFAULT_REGION is already set. If not, try to detect it.
+# This is required for the `aws` commands if not running within the CloudFormation environment
+# Uses shell parameter expansion: ${VAR:-DEFAULT_VALUE} -> If VAR is unset or null, use DEFAULT_VALUE.
+# Calls command substitution $(...) only if AWS_DEFAULT_REGION is unset/null.
+# Requires jq to parse the region from the instance identity document.
+export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region)}
+
+# Verify that AWS_DEFAULT_REGION is now non-empty (detection worked)
+if [ -z "$AWS_DEFAULT_REGION" ] || [ "$AWS_DEFAULT_REGION" == "null" ]; then
+  echo "[ERROR] Failed to detect AWS Region automatically."
+  echo "[ERROR] Please set the AWS_DEFAULT_REGION environment variable manually."
+  exit 1
+else
+  # Optional: Set AWS_REGION too for tools that might look for it instead.
+  export AWS_REGION=${AWS_REGION:-$AWS_DEFAULT_REGION}
+  echo "[INFO] Using AWS Region: ${AWS_DEFAULT_REGION}"
+fi
+
 echo "[INSTALL] Updating System & Installing Required Tools"
 apt update -y
 apt install -y ca-certificates curl unzip jq
