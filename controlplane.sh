@@ -19,7 +19,8 @@ if [ -z "$AWS_DEFAULT_REGION" ] || [ "$AWS_DEFAULT_REGION" == "null" ]; then
 else
   # Optional: Set AWS_REGION too for tools that might look for it instead.
   export AWS_REGION=${AWS_REGION:-$AWS_DEFAULT_REGION}
-  echo "[INFO] Using AWS Region: ${AWS_DEFAULT_REGION}"
+  echo "[INFO] Using AWS Region: ${AWS_REGION}"
+  echo "[INFO] Using AWS Default Region: ${AWS_DEFAULT_REGION}"
 fi
 
 echo "[INSTALL] Updating System & Installing Required Tools"
@@ -101,7 +102,7 @@ if [ -z "$K3S_TOKEN" ]; then
 fi
 
 # Store the K3S Server Token in AWS SSM so the Worker can read it and join the cluster.
-aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s Join Token to SSM"; exit 1; }
+aws ssm put-parameter --name "/k3s/join-token" --value "$K3S_TOKEN" --type "String" --overwrite --region $AWS_DEFAULT_REGION || { echo "[ERROR] Failed to write K3s Join Token to SSM"; exit 1; }
 
 # Get the IP Address of the Control Plane (this node)
 # CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4) # Public/Elastic IP
@@ -114,7 +115,7 @@ fi
 # Store the Control Plane IP Address in AWS SSM so the Worker can read it and join the cluster.
 K3S_URL="https://${CONTROL_PLANE_IP}:6443"
 echo "[K3S] Server URL: $K3S_URL"
-aws ssm put-parameter --name "/k3s/url" --value "$K3S_URL" --type "String" --overwrite || { echo "[ERROR] Failed to write K3s URL to SSM"; exit 1; }
+aws ssm put-parameter --name "/k3s/url" --value "$K3S_URL" --type "String" --overwrite --region $AWS_DEFAULT_REGION || { echo "[ERROR] Failed to write K3s URL to SSM"; exit 1; }
 
 # Ensure we get the correct number of worker nodes for this CloudFormation stack
 if [ -z "$WORKER_NODE_COUNT" ]; then
