@@ -1,7 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudFormation template for setting up a MemVerge.ai PoC environment with ALB integration. (Updated for unified node security group, fixed circular dependency)
+  CloudFormation template for setting up a MemVerge.ai PoC environment.
+  Uses a single Security Group for Control Plane and Worker Nodes, allowing specific traffic internally and SSH/HTTPS externally.
+  Integrates with an Application Load Balancer (ALB).
 
 Parameters:
   VPCID:
@@ -18,12 +20,12 @@ Parameters:
 
   AMIControlPlane:
     Type: AWS::EC2::Image::Id
-    Default: ami-0c3b809fcf2445b6a
+    Default: ami-0c3b809fcf2445b6a # Please update with a valid AMI ID for your region
     Description: AMI ID for the Control Plane instance
 
   AMIWorkerNode:
     Type: AWS::EC2::Image::Id
-    Default: ami-0c3b809fcf2445b6a
+    Default: ami-0c3b809fcf2445b6a # Please update with a valid AMI ID for your region
     Description: AMI ID for the Worker Node instance
 
   InstanceTypeControlPlane:
@@ -61,24 +63,20 @@ Parameters:
     Description: GitHub repository path for script files
 
 Mappings:
-  RegionMap:
+  RegionMap: # Example - update or remove if not used
     us-east-1:
-      AMI: ami-0abcdef1234567890 # Example placeholder - ensure this is valid or remove if unused
+      AMI: ami-0abcdef1234567890 # Example placeholder
 
 Resources:
-  # Unified Security Group for all nodes (Control Plane and Workers)
-  NodeSecurityGroup:
+  # --- Security Groups ---
+
+  # ALB Security Group (Allows Internet HTTP/HTTPS)
+  ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Unified security group for Control Plane and Worker nodes"
+      GroupDescription: "Security group for ALB - Allow internet HTTP/HTTPS"
       VpcId: !Ref VPCID
       SecurityGroupIngress:
-        # Rules allowing external access are defined here
-        # Allow SSH from the Internet
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
         # Allow HTTP from the Internet
         - IpProtocol: tcp
           FromPort: 80
@@ -89,44 +87,121 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-        # Self-referencing rule moved to a separate resource to avoid circular dependency
       Tags:
         - Key: Name
-          Value: "MemVerge-Node-SG"
+          Value: !Sub "${AWS::StackName}-MemVerge-ALB-SG"
 
-  # Separate Ingress rule to allow all traffic within the NodeSecurityGroup
-  NodeSecurityGroupSelfIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref NodeSecurityGroup           # Apply rule TO NodeSecurityGroup
-      IpProtocol: "-1"                         # All protocols
-      FromPort: -1                             # All ports
-      ToPort: -1
-      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId # Allow traffic FROM NodeSecurityGroup
-
-  # ALB Security Group remains unchanged
-  ALBSecurityGroup:
+  # Unified Security Group for all nodes (Control Plane and Workers)
+  NodeSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Security group for ALB"
+      GroupDescription: "Unified security group for Control Plane and Worker nodes"
       VpcId: !Ref VPCID
       SecurityGroupIngress:
+        # --- External Access Rules ---
+        # Allow SSH from the Internet
         - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
+          FromPort: 22
+          ToPort: 22
           CidrIp: 0.0.0.0/0
+          Description: "Allow SSH from Internet"
+        # Allow HTTPS from the Internet
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
+          Description: "Allow HTTPS from Internet"
+
+        # --- ALB Access Rules ---
+        # Allow HTTP traffic FROM the ALB Security Group
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+          Description: "Allow HTTP from ALB"
+        # Allow HTTPS traffic FROM the ALB Security Group
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+          Description: "Allow HTTPS from ALB"
+          # Note: Add rules for NodePort range (30000-32767) if ALB targets NodePorts
+
+        # --- Internal/Self Access Rules are defined in NodeSecurityGroupIngressRules ---
       Tags:
         - Key: Name
-          Value: "MemVerge-ALB-SG"
+          Value: !Sub "${AWS::StackName}-MemVerge-Node-SG"
 
+  # Separate Ingress rules resource for intra-node communication (avoids circular dependency)
+  # Defines rules allowing traffic FROM NodeSecurityGroup TO NodeSecurityGroup
+  NodeSecurityGroupIngressRules:
+    Type: AWS::EC2::SecurityGroupIngress # Use multiple ingress resources for clarity
+    # --- Rule 1: ICMP ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup           # Apply rule TO NodeSecurityGroup
+      IpProtocol: icmp
+      FromPort: -1                            # All ICMP types
+      ToPort: -1                            # All ICMP codes
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId # Allow traffic FROM NodeSecurityGroup
+      Description: "Allow All ICMPv4 within NodeSecurityGroup"
+  NodeSecurityGroupIngressDNS:
+    Type: AWS::EC2::SecurityGroupIngress
+    # --- Rule 2: DNS ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: udp
+      FromPort: 53
+      ToPort: 53
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
+      Description: "Allow DNS (UDP) within NodeSecurityGroup"
+  NodeSecurityGroupIngressNFS:
+    Type: AWS::EC2::SecurityGroupIngress
+    # --- Rule 3: NFS ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
+      Description: "Allow NFS (TCP) within NodeSecurityGroup (for EFS)"
+  NodeSecurityGroupIngressK8sApi:
+    Type: AWS::EC2::SecurityGroupIngress
+    # --- Rule 4: Kubernetes API ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6443
+      ToPort: 6443
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
+      Description: "Allow K8s API (6443) within NodeSecurityGroup"
+  NodeSecurityGroupIngressPort3000:
+    Type: AWS::EC2::SecurityGroupIngress
+    # --- Rule 5: Port 3000 ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3000
+      ToPort: 3000
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
+      Description: "Allow TCP 3000 within NodeSecurityGroup"
+  NodeSecurityGroupIngressKubelet:
+    Type: AWS::EC2::SecurityGroupIngress
+    # --- Rule 6: Kubelet API (Example Standard K8s Port) ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      FromPort: 10250
+      ToPort: 10250
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
+      Description: "Allow Kubelet API (10250) within NodeSecurityGroup"
+      # Add more AWS::EC2::SecurityGroupIngress resources here for other specific K8s ports if needed
+      # Alternatively, create a single rule with IpProtocol: "-1", FromPort: -1, ToPort: -1 to allow ALL internal traffic.
+
+  # --- IAM Role and Profile ---
   MemVergeInstanceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: MemVergeInstanceRole
+      RoleName: !Sub "${AWS::StackName}-MemVergeInstanceRole" # Unique Role Name per stack
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -136,16 +211,14 @@ Resources:
                 - ec2.amazonaws.com
             Action:
               - sts:AssumeRole
+      ManagedPolicyArns: # Use managed policies where possible
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore # Recommended for SSM
       Policies:
-        - PolicyName: SSMReadWriteAccessPolicy
+        # Policy for accessing specific SSM Parameters needed by scripts
+        - PolicyName: MemVergeSSMParameterAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:PutParameter
-                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*"
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -156,38 +229,35 @@ Resources:
                   - ssm:GetParameter
                   - ssm:PutParameter
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/k3s/url"
-        - PolicyName: EC2DescribeInstancesPolicy
+        # Policy for discovering instances (potentially needed by K3s or scripts)
+        - PolicyName: MemVergeEC2DescribePolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - ec2:DescribeInstances
-                Resource: "*"
-        - PolicyName: CloudFormationDescribeTagsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - cloudformation:DescribeTags
-                Resource: "*"
-        - PolicyName: CloudFormationDescribeStacksPolicy
+                  - ec2:DescribeTags # Often needed with DescribeInstances
+                Resource: "*" # Scope down if possible
+        # Policies for CloudFormation stack info (might be used by scripts)
+        - PolicyName: MemVergeCloudFormationDescribePolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - cloudformation:DescribeStacks
-                Resource: "*"
+                  - cloudformation:DescribeStackResources # May also be useful
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
 
   MemVergeInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      InstanceProfileName: MemVergeInstanceProfile
+      InstanceProfileName: !Sub "${AWS::StackName}-MemVergeInstanceProfile" # Unique Profile Name per stack
       Roles:
         - !Ref MemVergeInstanceRole
 
+  # --- Control Plane Instance ---
   ControlPlaneInstance:
     Type: AWS::EC2::Instance
     Properties:
@@ -199,30 +269,47 @@ Resources:
         - !Ref NodeSecurityGroup # Use the unified node security group
       IamInstanceProfile: !Ref MemVergeInstanceProfile
       BlockDeviceMappings:
-        - DeviceName: "/dev/sda1"
+        - DeviceName: "/dev/sda1" # Adjust based on AMI's root device name if necessary
           Ebs:
             VolumeSize: 60
+            VolumeType: gp3 # Consider using gp3
+            DeleteOnTermination: true
       Tags:
         - Key: Name
-          Value: "MemVerge-ControlPlane"
+          Value: !Sub "${AWS::StackName}-MemVerge-ControlPlane"
       UserData:
         Fn::Base64: !Sub |
-          #!/bin/bash
+          #!/bin/bash -xe
+          # Add error logging and exit on error
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
           apt update -y
-          apt install -y curl jq unzip
-          curl -s ${GitHubRepoPath}controlplane.sh -o controlplane.sh
-          chmod +x controlplane.sh
+          apt install -y curl jq unzip awscli # Added awscli for potential use
+
+          # Wait for network/metadata service
+          sleep 15
+
+          curl -s ${GitHubRepoPath}controlplane.sh -o /usr/local/bin/controlplane.sh
+          chmod +x /usr/local/bin/controlplane.sh
+
+          # Export variables needed by the script
           export MEMVERGE_VERSION=${MemVergeVersion}
           export MEMVERGE_SUBDOMAIN=${SubDomain}
           export MEMVERGE_GITHUB_TOKEN=${MemVergeGitHubToken}
           export STACK_NAME=${AWS::StackName}
+          export AWS_DEFAULT_REGION=${AWS::Region} # Make region available
+          export CONTROL_PLANE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) # Get private IP for K3s setup
           export WORKER_NODE_COUNT=${WorkerNodeCount}
-          ./controlplane.sh
+
+          # Execute the script
+          /usr/local/bin/controlplane.sh
 
   ControlPlaneEIP:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-MemVerge-ControlPlane-EIP"
 
   ControlPlaneEIPAssociation:
     Type: AWS::EC2::EIPAssociation
@@ -230,34 +317,62 @@ Resources:
       InstanceId: !Ref ControlPlaneInstance
       EIP: !Ref ControlPlaneEIP
 
+  # --- Worker Node Launch Template and Auto Scaling Group ---
   WorkerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      LaunchTemplateName: memverge-worker-launch-template
+      LaunchTemplateName: !Sub "${AWS::StackName}-memverge-worker-lt" # Unique LT Name per stack
       LaunchTemplateData:
         ImageId: !Ref AMIWorkerNode
         InstanceType: !Ref InstanceTypeWorker
         KeyName: !Ref KeyPairName
         IamInstanceProfile:
-          Name: !Ref MemVergeInstanceProfile
+          Name: !Ref MemVergeInstanceProfile # Reference the profile by name
         UserData:
           Fn::Base64: !Sub |
-            #!/bin/bash
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
             apt update -y
-            apt install -y curl
-            curl -s ${GitHubRepoPath}worker.sh -o worker.sh
-            chmod +x worker.sh
-            ./worker.sh
+            apt install -y curl awscli # Added awscli
+
+            # Wait for network/metadata service
+            sleep 15
+
+            curl -s ${GitHubRepoPath}worker.sh -o /usr/local/bin/worker.sh
+            chmod +x /usr/local/bin/worker.sh
+
+            # Export variables needed by the script
+            export AWS_DEFAULT_REGION=${AWS::Region} # Make region available
+            export STACK_NAME=${AWS::StackName}
+
+            # Execute the script
+            /usr/local/bin/worker.sh
         NetworkInterfaces:
-          - AssociatePublicIpAddress: true
+          - AssociatePublicIpAddress: true # Workers get public IPs (consider if needed or use NAT GW)
             DeviceIndex: 0
             SubnetId: !Ref SubnetID
             Groups:
               - !Ref NodeSecurityGroup # Use the unified node security group
+        BlockDeviceMappings:
+          - DeviceName: "/dev/sda1" # Adjust based on AMI's root device name if necessary
+            Ebs:
+              VolumeSize: 100 # Example size for worker
+              VolumeType: gp3
+              DeleteOnTermination: true
+        TagSpecifications: # Add tags via Launch Template
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-MemVerge-WorkerNode"
+              - Key: kubernetes.io/cluster/memvergeai-cluster # Match ASG tags if needed by K8s CNI/CSI
+                Value: owned
+              - Key: kubernetes.io/role/internal-elb # Match ASG tags if needed by K8s CNI/CSI
+                Value: "1"
 
   WorkerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
+      AutoScalingGroupName: !Sub "${AWS::StackName}-MemVerge-Worker-ASG" # Unique ASG Name per stack
       LaunchTemplate:
         LaunchTemplateId: !Ref WorkerLaunchTemplate
         Version: !GetAtt WorkerLaunchTemplate.LatestVersionNumber
@@ -266,35 +381,44 @@ Resources:
       DesiredCapacity: !Ref WorkerNodeCount
       VPCZoneIdentifier:
         - !Ref SubnetID
-      Tags:
+      Tags: # These tags apply to the ASG itself, PropagateAtLaunch is deprecated with LTs
         - Key: Name
-          Value: "MemVerge-WorkerNode"
-          PropagateAtLaunch: true
+          Value: !Sub "${AWS::StackName}-MemVerge-WorkerNode"
+          PropagateAtLaunch: false # Handled by Launch Template TagSpecifications
         - Key: kubernetes.io/cluster/memvergeai-cluster
           Value: owned
-          PropagateAtLaunch: true
+          PropagateAtLaunch: false # Handled by Launch Template TagSpecifications
         - Key: kubernetes.io/role/internal-elb
           Value: "1"
-          PropagateAtLaunch: true
+          PropagateAtLaunch: false # Handled by Launch Template TagSpecifications
+    UpdatePolicy: # Add an update policy for smoother rolling updates
+       AutoScalingRollingUpdate:
+          MaxBatchSize: '1'
+          MinInstancesInService: !Ref WorkerNodeCount # Adjust if you allow temporary reduction
+          PauseTime: 'PT5M' # Example pause time
+          WaitOnResourceSignals: true # Optional: Wait for cfn-signal from instances
 
 Outputs:
   ControlPlanePublicIP:
-    Description: Public IP of the Control Plane
-    Value: !GetAtt ControlPlaneEIP.PublicIp
+    Description: Public IP address assigned to the Control Plane instance
+    Value: !GetAtt ControlPlaneEIP.PublicIp # Corrected to get IP from EIP resource
 
   NodeSecurityGroupID:
-    Description: Security Group ID for Control Plane and Worker Nodes
+    Description: Security Group ID used by Control Plane and Worker Nodes
     Value: !Ref NodeSecurityGroup
 
   ALBSecurityGroupID:
-    Description: Security Group ID for ALB
+    Description: Security Group ID used by the Application Load Balancer
     Value: !Ref ALBSecurityGroup
 
-  ControlPlaneElasticIP:
-    Description: Elastic IP of the Control Plane
-    Value: !GetAtt ControlPlaneEIP.PublicIp
-
   ControlPlaneInstanceId:
-    Description: Instance Id of the Control Plane
+    Description: Instance ID of the Control Plane EC2 instance
     Value: !Ref ControlPlaneInstance
 
+  WorkerAutoScalingGroupName:
+    Description: Name of the Auto Scaling Group for Worker Nodes
+    Value: !Ref WorkerAutoScalingGroup
+
+  WorkerLaunchTemplateId:
+    Description: ID of the Launch Template used for Worker Nodes
+    Value: !Ref WorkerLaunchTemplate
