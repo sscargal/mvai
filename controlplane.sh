@@ -204,6 +204,15 @@ if [ -z "$MEMVERGE_VERSION" ] || [ -z "$MEMVERGE_SUBDOMAIN" ] || [ -z "$MEMVERGE
     exit 1
 fi
 
+# Use the K3s-generated kubeconfig file for helm and kubectl commands
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+echo "[INFO] Using KUBECONFIG=${KUBECONFIG}"
+
+# Verify kubectl can connect (optional but good debug step)
+echo "[K8S] Checking cluster connectivity..."
+kubectl cluster-info || echo "[WARN] Initial kubectl cluster-info failed."
+kubectl get nodes || echo "[WARN] Initial kubectl get nodes failed."
+
 echo "[INIT] MemVerge.ai installation starting..."
 
 echo "[HELM] Installing Helm"
