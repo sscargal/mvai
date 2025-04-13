@@ -126,7 +126,7 @@ echo "[WAIT] Waiting for $WORKER_NODE_COUNT worker nodes to become Ready"
 # Include the Control Plan in the node count
 EXPECTED_NODES=$((WORKER_NODE_COUNT + 1))
 
-timeout=300
+timeout=1800 # 30mins
 interval=30
 elapsed=0
 # Wait for the nodes to be "Ready"
