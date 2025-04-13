@@ -6,8 +6,6 @@ echo "[INIT] Worker Node Initialization"
 # Get current date and time - using UTC for consistency
 CURRENT_DATETIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 echo "[INFO] Script started at: $CURRENT_DATETIME"
-echo "[INFO] Location context: Mead, Colorado, United States" # Based on user context
-
 
 apt update -y
 apt install -y unzip curl jq apt-transport-https ca-certificates curl software-properties-common
@@ -162,5 +160,9 @@ echo "[INFO] Executing K3s join command..."
 curl -sfL https://get.k3s.io | K3S_URL=https://myserver:6443 K3S_TOKEN="$K3S_TOKEN" sh - || { echo "[ERROR] K3s worker node agent failed"; exit 1; }
 
 echo "[SUCCESS] Worker joined cluster successfully."
+
+# Get current date and time - using UTC for consistency
+CURRENT_DATETIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+echo "[INFO] Script ended at: $CURRENT_DATETIME"
 
 exit 0 # Explicitly exit with success
