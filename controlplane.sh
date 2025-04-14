@@ -286,7 +286,7 @@ helm install --namespace cattle-system mvai oci://ghcr.io/memverge/charts/mvai \
   --set hostname=$LOADBALANCER_HOSTNAME \
   --set bootstrapPassword="admin" \
   --set ingress.tls.source=letsEncrypt \
-  --set letsEncrypt.email="me@example.org" \
+  --set letsEncrypt.email="noreply@memvergelab.com" \
   --set letsEncrypt.ingress.class=traefik
 
 if [ $? -ne 0 ]; then
