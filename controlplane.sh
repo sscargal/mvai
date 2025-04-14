@@ -194,6 +194,15 @@ fi
 # Install MemVerge.ai
 ##########
 
+# Point to the K3s-generated kubeconfig file
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+echo "[INFO] Using KUBECONFIG=${KUBECONFIG}"
+
+# Verify kubectl can connect (optional but good debug step)
+echo "[K8S] Checking cluster connectivity..."
+kubectl cluster-info || echo "[WARN] Initial kubectl cluster-info failed."
+kubectl get nodes || echo "[WARN] Initial kubectl get nodes failed."
+
 # Validate environment variables
 if [ -z "$MEMVERGE_VERSION" ] || [ -z "$MEMVERGE_SUBDOMAIN" ] || [ -z "$MEMVERGE_GITHUB_TOKEN" ]; then
     echo "[ERROR] Missing required environment variables."
@@ -203,15 +212,6 @@ if [ -z "$MEMVERGE_VERSION" ] || [ -z "$MEMVERGE_SUBDOMAIN" ] || [ -z "$MEMVERGE
     echo "Ensure MEMVERGE_VERSION, MEMVERGE_SUBDOMAIN, and MEMVERGE_GITHUB_TOKEN are set."
     exit 1
 fi
-
-# Use the K3s-generated kubeconfig file for helm and kubectl commands
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-echo "[INFO] Using KUBECONFIG=${KUBECONFIG}"
-
-# Verify kubectl can connect (optional but good debug step)
-echo "[K8S] Checking cluster connectivity..."
-kubectl cluster-info || echo "[WARN] Initial kubectl cluster-info failed."
-kubectl get nodes || echo "[WARN] Initial kubectl get nodes failed."
 
 echo "[INIT] MemVerge.ai installation starting..."
 
@@ -226,36 +226,75 @@ helm repo update
 
 echo "[CERT-MANAGER] Installing cert-manager"
 kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
-helm install cert-manager jetstack/cert-manager --namespace cert-manager --set crds.enabled=true
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=cert-manager -n cert-manager --timeout=300s || echo "[WARN] cert-manager may not be ready"
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --set crds.enabled=true \
+  --create-namespace # Add --create-namespace just in case, although kubectl does it above
+
+echo "[CERT-MANAGER] Waiting for cert-manager deployments to become available..."
+if ! kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=300s; then
+    echo "[ERROR] Timed out waiting for cert-manager deployments to become available. Checking pod status..."
+    kubectl get pods -n cert-manager -o wide
+    # Add describe/logs for failing pods if needed here
+    exit 1
+fi
+echo "[CERT-MANAGER] All cert-manager deployments available."
+
+# --- ADD SHORT DELAY ---
+echo "[INFO] Adding short delay for webhook stabilization..."
+sleep 15
+# --- END DELAY ---
 
 echo "[HELM] Logging into GHCR"
-helm registry logout ghcr.io/memverge || echo "[INFO] helm registry logout failed"
-helm registry login ghcr.io/memverge -u mv-customer-support -p $MEMVERGE_GITHUB_TOKEN
+# Using || true allows the script to continue if logout fails (e.g., already logged out)
+helm registry logout ghcr.io/memverge || true
+
+# Log in using --password-stdin
+echo "[INFO] Logging into ghcr.io/memverge using password/token via stdin..."
+# Use printf to pipe the token without adding extra newlines or interpreting escapes
+printf "%s" "$MEMVERGE_GITHUB_TOKEN" | helm registry login ghcr.io/memverge \
+  -u mv-customer-support \
+  --password-stdin
+
+# Check the exit status of the login command
 if [ $? -ne 0 ]; then
     echo "[ERROR] Helm login failed. Exiting."
     exit 1
+else
+    echo "[INFO] Helm login succeeded." # Optional success message
 fi
 
-kubectl create namespace cattle-system || true
-kubectl create secret generic memverge-dockerconfig --namespace cattle-system \
-    --from-file=.dockerconfigjson=$HOME/.config/helm/registry/config.json \
-    --type=kubernetes.io/dockerconfigjson
+# Ensure cattle-system namespace exists (use create --dry-run | apply for idempotency)
+echo "[SETUP] Ensuring cattle-system namespace exists"
+kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f -
+
+# Create or update secret (use apply for idempotency)
+echo "[SETUP] Creating/Updating image pull secret in cattle-system namespace"
+kubectl create secret docker-registry memverge-dockerconfig \
+  --namespace cattle-system \
+  --docker-server=ghcr.io/memverge \
+  --docker-username=mv-customer-support \
+  --docker-password=$MEMVERGE_GITHUB_TOKEN \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 LOADBALANCER_HOSTNAME="${MEMVERGE_SUBDOMAIN}.memvergelab.com"
 
 echo "[MVAI] Installing MemVerge.ai using the Helm Chart"
 helm install --namespace cattle-system mvai oci://ghcr.io/memverge/charts/mvai \
-    --wait --timeout 20m \
-    --version ${MEMVERGE_VERSION} \
-    --set hostname=$LOADBALANCER_HOSTNAME \
-    --set bootstrapPassword=admin \
-    --set ingress.tls.source=letsEncrypt \
-    --set letsEncrypt.email=support@memverge.ai \
-    --set letsEncrypt.ingress.class=traefik
+  --wait --timeout 30m \
+  --version $MEMVERGE_VERSION \
+  --set hostname=$LOADBALANCER_HOSTNAME \
+  --set bootstrapPassword="admin" \
+  --set ingress.tls.source=letsEncrypt \
+  --set letsEncrypt.email="me@example.org" \
+  --set letsEncrypt.ingress.class=traefik
+
 if [ $? -ne 0 ]; then
-    echo "[ERROR] Helm install failed. Exiting."
-    exit 1
+  echo "[ERROR] Helm install failed. Exiting."
+  # Add debugging for mvai pods if install fails
+  echo "[DEBUG] Checking pod status in cattle-system namespace after failed install:"
+  kubectl get pods -n cattle-system -o wide --show-labels
+  exit 1
 fi
 
-echo "[SUCCESS] MemVerge.ai Installed"
+echo "[SUCCESS] MemVerge.ai installation script finished."
