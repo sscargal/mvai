@@ -225,11 +225,213 @@ helm repo add jetstack https://charts.jetstack.io --force-update
 helm repo update
 
 echo "[CERT-MANAGER] Installing cert-manager"
-kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
-helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --set crds.enabled=true \
-  --create-namespace # Add --create-namespace just in case, although kubectl does it above
+echo "[CERT-MANAGER] Checking if namespace 'cert-manager' exists..."
+
+# Attempt to get the namespace. Exit code will be 0 if it exists, non-zero otherwise.
+# Redirect stdout and stderr (> /dev/null 2>&1) to suppress command output.
+kubectl get namespace cert-manager > /dev/null 2>&1
+NAMESPACE_EXISTS_EXIT_CODE=$?
+
+# Check the exit code from the 'get namespace' command
+if [ $NAMESPACE_EXISTS_EXIT_CODE -ne 0 ]; then
+  # Namespace does NOT exist (kubectl get failed), so create it
+  echo "[INFO] Namespace 'cert-manager' not found. Creating..."
+  kubectl create namespace cert-manager
+  # Check if the create command succeeded
+  if [ $? -ne 0 ]; then
+    echo "[ERROR] Failed to create namespace 'cert-manager'."
+    exit 1 # Exit script if creation fails
+  else
+    echo "[INFO] Namespace 'cert-manager' created successfully."
+  fi
+else
+  # Namespace already exists (kubectl get succeeded)
+  echo "[INFO] Namespace 'cert-manager' already exists. Skipping creation."
+fi
+
+# --- Cert-Manager Installation Section ---
+
+# Flag to track if we need to run the installation steps
+SKIP_CERT_MANAGER_INSTALL=false
+CERT_MANAGER_NAMESPACE="cert-manager"
+CERT_MANAGER_RELEASE_NAME="cert-manager"
+LATEST_CM_VERSION="" # Variable to store latest version
+
+echo "[CERT-MANAGER] Checking existing cert-manager Helm release status in namespace ${CERT_MANAGER_NAMESPACE}..."
+# Check if a deployed Helm release exists and is healthy in the target namespace
+if helm status ${CERT_MANAGER_RELEASE_NAME} -n ${CERT_MANAGER_NAMESPACE} > /dev/null 2>&1; then
+    echo "[CERT-MANAGER] Helm release '${CERT_MANAGER_RELEASE_NAME}' found. Verifying deployment status..."
+    # Quick check if key deployments are Available
+    CM_AVAILABLE=true
+    for deployment in cert-manager cert-manager-cainjector cert-manager-webhook; do
+        # Check if deployment exists and is available
+        STATUS=$(kubectl get deployment ${deployment} -n ${CERT_MANAGER_NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$STATUS" != "True" ]; then
+            echo "[WARN] Deployment ${deployment} found but is not 'Available' (Status: $STATUS). Will attempt install/upgrade."
+            CM_AVAILABLE=false
+            break
+        fi
+    done
+
+    if [ "$CM_AVAILABLE" = true ]; then
+        echo "[CERT-MANAGER] Existing cert-manager deployments look Available. Skipping installation and verification."
+        # Update repo index even if skipping install, so subsequent operations have latest info
+        echo "[HELM] Updating jetstack repo index..."
+        helm repo update jetstack || echo "[WARN] Failed to update jetstack repo, subsequent installs might use cached versions."
+        SKIP_CERT_MANAGER_INSTALL=true
+    else
+         echo "[CERT-MANAGER] Existing Helm release found, but deployments not fully available. Will attempt install/upgrade."
+         # Ensure repo is updated before install/upgrade attempt
+         echo "[HELM] Updating jetstack repo index..."
+         helm repo update jetstack || { echo "[ERROR] Failed to update jetstack repo. Cannot ensure latest version."; exit 1; }
+    fi
+else
+    echo "[CERT-MANAGER] Helm release '${CERT_MANAGER_RELEASE_NAME}' not found. Proceeding with installation..."
+    # Ensure repo is updated before install attempt
+    echo "[HELM] Updating jetstack repo index..."
+    helm repo update jetstack || { echo "[ERROR] Failed to update jetstack repo. Cannot ensure latest version."; exit 1; }
+fi
+
+
+# --- Installation Block ---
+if [ "$SKIP_CERT_MANAGER_INSTALL" = false ]; then
+
+    # --- Determine Latest Certificate manager Version ---
+    echo "[CERT-MANAGER] Determining latest stable cert-manager version from jetstack repo..."
+    # Get the latest non-development version using helm search and parsing
+    # Ensure repo was updated just before this section if install is needed
+    LATEST_CM_VERSION=$(helm search repo jetstack/cert-manager --versions --devel=false | awk '$1 == "jetstack/cert-manager" {print $2; exit}')
+
+    if [ -z "$LATEST_CM_VERSION" ]; then
+        echo "[ERROR] Could not determine the latest stable version for jetstack/cert-manager via helm search."
+        exit 1
+    fi
+    echo "[CERT-MANAGER] Latest stable version found: ${LATEST_CM_VERSION}"
+    # --- End Determine Latest Version ---
+
+    echo "[CERT-MANAGER] Ensuring ${CERT_MANAGER_NAMESPACE} namespace exists..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${CERT_MANAGER_NAMESPACE}
+EOF
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] Failed to apply ${CERT_MANAGER_NAMESPACE} namespace definition."
+        kubectl get namespace ${CERT_MANAGER_NAMESPACE} || exit 1 # Exit if apply failed AND it doesn't exist
+    fi
+    echo "[SETUP] Namespace ${CERT_MANAGER_NAMESPACE} ensured."
+  
+    # --- Install CRDs Manually using LATEST determined version ---
+    # Note: GitHub release tags usually have a 'v' prefix
+    CRD_URL="https://github.com/cert-manager/cert-manager/releases/download/${LATEST_CM_VERSION}/cert-manager.crds.yaml"
+    echo "[CERT-MANAGER] Applying cert-manager CRDs from ${CRD_URL}..."
+
+    # Download CRDs to a temporary file first
+    TMP_CRD_FILE=$(mktemp)
+    if [ -z "$TMP_CRD_FILE" ]; then
+      echo "[ERROR] Failed to create temporary file for CRDs."
+      exit 1
+    fi
+
+    if curl -sSL "${CRD_URL}" -o "${TMP_CRD_FILE}"; then
+        # Apply the downloaded CRDs
+        if ! kubectl apply -f "${TMP_CRD_FILE}"; then
+            echo "[ERROR] Failed to apply downloaded cert-manager CRDs from ${TMP_CRD_FILE}. Exiting."
+            rm -f "${TMP_CRD_FILE}" # Clean up temp file on error
+            exit 1
+        fi
+        rm -f "${TMP_CRD_FILE}" # Clean up temp file on success
+        echo "[CERT-MANAGER] CRDs applied successfully."
+    else
+         echo "[ERROR] Failed to download cert-manager CRDs from ${CRD_URL}. Please check version/URL. Exiting."
+         rm -f "${TMP_CRD_FILE}" # Clean up temp file on error
+         exit 1
+    fi
+
+    echo "[CERT-MANAGER] Waiting for CRD registration..."
+    sleep 45 # Keep the wait after CRD apply
+    echo "[CERT-MANAGER] Finished waiting for CRD registration."
+    # --- End CRD Install ---
+
+
+    echo "[CERT-MANAGER] Installing cert-manager Helm chart version ${LATEST_CM_VERSION}..."
+    # Use the determined LATEST version and explicitly disable Helm's CRD installation
+    helm install cert-manager jetstack/cert-manager \
+      --namespace cert-manager \
+      --version ${LATEST_CM_VERSION} \
+      --create-namespace \
+      --set installCRDs=false \
+      --set startupapicheck.enabled=false \
+      --wait \
+      --timeout 10m # Wait up to 10 minutes for all resources (including hooks/jobs)
+
+    # Check the exit status of the helm install command
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] 'helm install ${CERT_MANAGER_RELEASE_NAME}' failed. Exiting."
+        echo "[DEBUG] Gathering diagnostic info from ${CERT_MANAGER_NAMESPACE} namespace..."
+        # (Debugging commands remain the same, using variables)
+        echo "------- Pod Status -------"
+        kubectl get pods -n ${CERT_MANAGER_NAMESPACE} -o wide
+        echo "------- Deployments Status -------"
+        kubectl get deployments -n ${CERT_MANAGER_NAMESPACE}
+        echo "------- Recent Events -------"
+        kubectl get events -n ${CERT_MANAGER_NAMESPACE} --sort-by='.metadata.creationTimestamp' | tail -n 20
+        echo "------- Describing Pending/Error Pods (if any) -------"
+        kubectl get pods -n ${CERT_MANAGER_NAMESPACE} --no-headers | awk '$3 != "Running" && $3 != "Completed" {print $1}' | xargs -r -n 1 kubectl describe pod -n ${CERT_MANAGER_NAMESPACE}
+        echo "[DEBUG] Getting logs for current startupapicheck job pods..."
+        kubectl logs -n cert-manager -l app=startupapicheck --tail=100
+        echo "[DEBUG] Getting logs for PREVIOUS startupapicheck job pods (if any)..."
+        kubectl logs -n cert-manager -l app=startupapicheck --tail=100 --previous
+        exit 1
+    fi
+    echo "[CERT-MANAGER] Helm install command succeeded. Proceeding with readiness checks..."
+
+    # --- Robust Readiness Checks (only run if install was attempted) ---
+    echo "[CERT-MANAGER] Waiting for cert-manager deployments to become available..."
+    if ! kubectl wait --for=condition=Available deployment --all -n ${CERT_MANAGER_NAMESPACE} --timeout=300s; then
+        echo "[ERROR] Timed out waiting for cert-manager deployments to become available. Check status:"
+        kubectl get pods -n ${CERT_MANAGER_NAMESPACE} -o wide
+        exit 1
+    fi
+    echo "[CERT-MANAGER] Deployments available."
+
+    echo "[CERT-MANAGER] Waiting for cert-manager webhook pod(s) to be Ready..."
+    WEBHOOK_SELECTOR="app.kubernetes.io/instance=${CERT_MANAGER_RELEASE_NAME},app.kubernetes.io/component=webhook"
+    if ! kubectl wait --for=condition=Ready pod -l ${WEBHOOK_SELECTOR} -n ${CERT_MANAGER_NAMESPACE} --timeout=180s; then
+        echo "[ERROR] Timed out waiting for cert-manager webhook pod(s) to be Ready. Check status:"
+        kubectl get pods -n ${CERT_MANAGER_NAMESPACE} -l ${WEBHOOK_SELECTOR} -o wide
+        kubectl describe pod -n ${CERT_MANAGER_NAMESPACE} -l ${WEBHOOK_SELECTOR}
+        kubectl logs -n ${CERT_MANAGER_NAMESPACE} -l ${WEBHOOK_SELECTOR} --tail=50
+        exit 1
+    fi
+    echo "[CERT-MANAGER] Webhook pod(s) Ready."
+
+    echo "[CERT-MANAGER] Waiting for cert-manager webhook service endpoints to be available..."
+    ENDPOINTS_READY=false
+    # Loop until endpoints have at least one address
+    for i in {1..30}; do # Check for 30 * 5s = 150 seconds max
+        ENDPOINT_IPS=$(kubectl get endpoints cert-manager-webhook -n ${CERT_MANAGER_NAMESPACE} -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
+        if [ -n "$ENDPOINT_IPS" ]; then
+            echo "[CERT-MANAGER] Webhook endpoints found: ${ENDPOINT_IPS}"
+            ENDPOINTS_READY=true
+            break
+        fi
+        echo "[CERT-MANAGER] Waiting for webhook endpoints... (${i}/30)"
+        sleep 5
+    done
+
+    if [ "$ENDPOINTS_READY" = false ]; then
+        echo "[ERROR] Timed out waiting for cert-manager webhook service endpoints."
+        kubectl get endpoints cert-manager-webhook -n ${CERT_MANAGER_NAMESPACE}
+        kubectl describe svc cert-manager-webhook -n ${CERT_MANAGER_NAMESPACE}
+        exit 1
+    fi
+    echo "[CERT-MANAGER] Cert-manager webhook service endpoints available."
+    echo "[CERT-MANAGER] Installation and verification complete."
+
+fi
+# --- End Installation Block ---
 
 echo "[CERT-MANAGER] Waiting for cert-manager deployments to become available..."
 if ! kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=300s; then
