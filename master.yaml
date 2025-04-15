@@ -194,8 +194,16 @@ Resources:
       ToPort: 10250
       SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
       Description: "Allow Kubelet API (10250) within NodeSecurityGroup"
-      # Add more AWS::EC2::SecurityGroupIngress resources here for other specific K8s ports if needed
-      # Alternatively, create a single rule with IpProtocol: "-1", FromPort: -1, ToPort: -1 to allow ALL internal traffic.
+  NodeSecurityGroupIngressAllTCP:
+    Type: AWS::EC2::SecurityGroupIngress
+    # --- Rule 7: Allow all Internal TCP & UDP Port Communication ---
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: -1
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId: !GetAtt NodeSecurityGroup.GroupId
+      Description: "Allow all TCP and UDP Traffic within NodeSecurityGroup"
 
   # --- IAM Role and Profile ---
   MemVergeInstanceRole:
